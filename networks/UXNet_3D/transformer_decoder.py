@@ -80,22 +80,22 @@ class kMaXPredictor(nn.Module):
     def __init__(self, in_channel_pixel, in_channel_query, num_classes=133+1):
         super().__init__()
         self._pixel_space_head_conv0bnact = ConvBN(in_channel_pixel, in_channel_pixel, kernel_size=5, groups=in_channel_pixel, padding=2, bias=False,
-                                                   norm='syncbn', act='gelu', conv_init='xavier_uniform')
-        self._pixel_space_head_conv1bnact = ConvBN(in_channel_pixel, 256, kernel_size=1, bias=False, norm='syncbn', act='gelu')
-        self._pixel_space_head_last_convbn = ConvBN(256, 128, kernel_size=1, bias=True, norm='syncbn', act=None)
+                                                   norm='3d', act='gelu', conv_init='xavier_uniform')
+        self._pixel_space_head_conv1bnact = ConvBN(in_channel_pixel, 256, kernel_size=1, bias=False, norm='3d', act='gelu')
+        self._pixel_space_head_last_convbn = ConvBN(256, 128, kernel_size=1, bias=True, norm='3d', act=None)
         trunc_normal_(self._pixel_space_head_last_convbn.conv.weight, std=0.01)
 
-        self._transformer_mask_head = ConvBN(256, 128, kernel_size=1, bias=False, norm='syncbn', act=None, conv_type='1d')
+        self._transformer_mask_head = ConvBN(256, 128, kernel_size=1, bias=False, norm='1d', act=None, conv_type='1d')
         self._transformer_class_head = ConvBN(256, num_classes, kernel_size=1, norm=None, act=None, conv_type='1d')
         trunc_normal_(self._transformer_class_head.conv.weight, std=0.01)
 
-        self._pixel_space_mask_batch_norm = get_norm('syncbn', channels=1)
+        self._pixel_space_mask_batch_norm = get_norm('', channels=1)
         nn.init.constant_(self._pixel_space_mask_batch_norm.weight, 0.1)
 
 
     def forward(self, mask_embeddings, class_embeddings, pixel_feature):
         # mask_embeddings/class_embeddings: B x C x N
-        # pixel feature: B x C x H x W
+        # pixel feature: B x C x H x W x D
         pixel_space_feature = self._pixel_space_head_conv0bnact(pixel_feature)
         pixel_space_feature = self._pixel_space_head_conv1bnact(pixel_space_feature)
         pixel_space_feature = self._pixel_space_head_last_convbn(pixel_space_feature)
@@ -104,7 +104,7 @@ class kMaXPredictor(nn.Module):
         cluster_class_logits = self._transformer_class_head(class_embeddings).permute(0, 2, 1).contiguous()
         cluster_class_logits = add_bias_towards_void(cluster_class_logits)
         cluster_mask_kernel = self._transformer_mask_head(mask_embeddings)
-        mask_logits = torch.einsum('bchw,bcn->bnhw',
+        mask_logits = torch.einsum('bchwd,bcn->bnhwd',
           pixel_space_normalized_feature, cluster_mask_kernel)
         
         mask_logits = self._pixel_space_mask_batch_norm(mask_logits.unsqueeze(dim=1)).squeeze(dim=1)
@@ -209,7 +209,7 @@ class kMaXTransformerLayer(nn.Module):
 
         # k-means cross-attention.
         pixel_value = self._pixel_v_conv_bn(pixel_space) # N C H W D
-        pixel_value = pixel_value.reshape(N, self._total_value_depth, H*W)
+        pixel_value = pixel_value.reshape(N, self._total_value_depth, H*W*D)
         # k-means assignment.
         prediction_result = self._predcitor(
             mask_embeddings=query_space, class_embeddings=query_space, pixel_feature=pixel_space)
