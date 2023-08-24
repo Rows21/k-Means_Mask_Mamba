@@ -7,7 +7,7 @@ Created on Sun Apr 10 15:04:06 2022
 """
 
 from typing import Tuple
-
+import torch
 import torch.nn as nn
 
 from monai.networks.blocks.dynunet_block import UnetOutBlock
@@ -19,7 +19,9 @@ from lib.models.tools.module_helper import ModuleHelper
 from networks.UXNet_3D.uxnet_encoder import uxnet_conv
 from timm.models.layers import trunc_normal_tf_ as trunc_normal_
 
-from networks.UXNet_3D.transformer_decoder import kMaXTransformerLayer
+from networks.UXNet_3D.transformer_decoder import ConvBN, kMaXTransformerLayer, kMaXPredictor
+
+from torch.cuda.amp import autocast
 
 class ProjectionHead(nn.Module):
     def __init__(self, dim_in, proj_dim=256, proj='convmlp', bn_type='torchbn'):
@@ -39,6 +41,19 @@ class ProjectionHead(nn.Module):
     def forward(self, x):
         return F.normalize(self.proj(x), p=2, dim=1)
 
+class MLP(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        # 将B和N维度合并
+        x = x.view(x.size(0), -1)
+        x = self.fc1(x)
+        x = torch.relu(x)
+        x = self.fc2(x)
+        return x
 
 # class ResBlock(nn.Module):
 #     expansion = 1
@@ -97,7 +112,7 @@ class UXNET(nn.Module):
         self,
         in_chans=1,
         out_chans=13,
-        num_queries=133,
+        num_queries=128,
         depths=[2, 2, 2, 2],
         feat_size=[48, 96, 192, 384],
         drop_path_rate=0,
@@ -265,17 +280,38 @@ class UXNET(nn.Module):
             norm_name=norm_name,
             res_block=res_block,
         )
-        self._transformer_decoder1 = kMaXTransformerLayer(
-            num_classes=133+1,
-            in_channel_pixel=384,
-            in_channel_query=256,
-            base_filters=128,
-            num_heads=8,
-            bottleneck_expansion=2,
-            key_expansion=1,
-            value_expansion=2
-            #drop_path_prob=drop_path_prob
-        )
+
+        self._kmax_transformer_layers = nn.ModuleList()
+
+        for index, output_stride in enumerate([384, 192, 96]):
+            for _ in range(2):
+                self._kmax_transformer_layers.append(kMaXTransformerLayer(
+                    num_classes=32,
+                    in_channel_pixel=output_stride,
+                    in_channel_query=256,
+                    base_filters=128,
+                    num_heads=8,
+                    bottleneck_expansion=2,
+                    key_expansion=1,
+                    value_expansion=2
+                    #drop_path_prob=drop_path_prob
+                    )
+                )
+
+        # class embedding
+        self._class_embedding_projection = ConvBN(256, 256, kernel_size=1, bias=False, norm='1d', act='gelu',
+                                                  conv_type='1d')
+        self._mask_embedding_projection = ConvBN(256, 256, kernel_size=1, bias=False, norm='1d', act='gelu',
+                                                  conv_type='1d')
+        
+        self._predcitor = kMaXPredictor(in_channel_pixel=feat_size[0],
+            in_channel_query=256, num_classes=132+1)
+
+        # MLP Net
+        self.mlp = MLP(num_queries * 256, 64, num_queries * 3)
+
+        # softmax
+        self.softmax = nn.Softmax(dim=1)
 
         self.out = UnetOutBlock(spatial_dims=spatial_dims, in_channels=48, out_channels=self.out_chans)
         # self.conv_proj = ProjectionHead(dim_in=hidden_size)
@@ -285,7 +321,6 @@ class UXNET(nn.Module):
         # learnable query features
         self._cluster_centers = nn.Embedding(256, num_queries)
         trunc_normal_(self._cluster_centers.weight, std=1.0)
-
 
     def proj_feat(self, x, hidden_size, feat_size):
         new_view = (x.size(0), *feat_size, hidden_size)
@@ -307,12 +342,6 @@ class UXNET(nn.Module):
         # query space init
         B = enc1.shape[0]
         cluster_centers = self._cluster_centers.weight.unsqueeze(0).repeat(B, 1, 1) # B x C x L
-
-        current_transformer_idx = 0
-
-        predictions_class = []
-        predictions_mask = []
-        predictions_pixel_feature = []
         
         x2 = outs[0]
         enc2 = self.encoder2(x2)
@@ -327,27 +356,71 @@ class UXNET(nn.Module):
         enc_hidden = self.encoder5(outs[3])
         dec3 = self.decoder5(enc_hidden, enc4)
 
-        cluster_centers, prediction_result = self._transformer_decoder1(
-                        pixel_feature=dec3, query_feature=cluster_centers
-                    )
-        predictions_class.append(prediction_result['class_logits'])
-        predictions_mask.append(prediction_result['mask_logits'])
-        predictions_pixel_feature.append(prediction_result['pixel_feature'])
-        
-        
-
-        # dual-path transformer
-        for i, feat in enumerate(dec3):
-            current_transformer_idx += 1
-
         dec2 = self.decoder4(dec3, enc3)
         dec1 = self.decoder3(dec2, enc2)
         dec0 = self.decoder2(dec1, enc1)
         out = self.decoder1(dec0)
 
-        multi_scale_feature = [dec3,dec2,dec1]
-        panoptic_feature = [dec0,out]
+        multi_scale_features = [dec3,dec2,dec1]
+        # panoptic_features = [dec0]
         semantic_feature = [dec3,dec1,dec0]
         # feat = self.conv_proj(dec4)
+
+        current_transformer_idx = 0
+
+        predictions_class = []
+        predictions_mask = []
+        predictions_pixel_feature = []
+
+        # dual-path transformer
+        for i, feat in enumerate(multi_scale_features):
+            for _ in range(2):
+                cluster_centers, prediction_result = self._kmax_transformer_layers[current_transformer_idx](
+                        pixel_feature=feat, query_feature=cluster_centers
+                    )
+                predictions_class.append(prediction_result['class_logits'])
+                predictions_mask.append(prediction_result['mask_logits'])
+                predictions_pixel_feature.append(prediction_result['pixel_feature'])
+                current_transformer_idx += 1
+
+        class_embeddings = self._class_embedding_projection(cluster_centers)
+        mask_embeddings = self._mask_embedding_projection(cluster_centers)
+
+        # Final predictions.
+        prediction_result = self._predcitor(
+            class_embeddings=class_embeddings,
+            mask_embeddings=mask_embeddings,
+            pixel_feature=dec0,
+        )
+        predictions_class.append(prediction_result['class_logits'])
+        predictions_mask.append(prediction_result['mask_logits'])
+        predictions_pixel_feature.append(prediction_result['pixel_feature'])
+
+        out0 = {
+            'pred_logits': predictions_class[-1],
+            'pred_masks': predictions_mask[-1],
+            'pixel_feature': predictions_pixel_feature[-1],
+            # 'aux_outputs': self._set_aux_loss(predictions_class, predictions_mask, predictions_pixel_feature),      
+        }
         
-        return self.out(out)
+        for output_key in ["pixel_feature", "pred_masks", "pred_logits", "aux_semantic_pred"]:
+            if output_key in out0:
+                out0[output_key] = out0[output_key].float()
+
+        bs, num_queries = out0["pred_logits"].shape[:2]
+
+        # MLP
+        cluster_classification = self.mlp(cluster_centers)
+        cluster_classification = cluster_classification.view(B, num_queries, -1)
+
+        # Softmax
+        query_response = self.softmax(out0['pred_masks'])
+        # Merge
+        merge1 = torch.sum(query_response[:, :16, :, :, :], dim=1).unsqueeze(1)
+        merge2 = torch.sum(query_response[:, 16:20, :, :, :], dim=1).unsqueeze(1)
+        merge3 = torch.sum(query_response[:, 20:, :, :, :], dim=1).unsqueeze(1)
+
+        cluster_assignment = torch.cat((merge1,merge2,merge3), dim=1)
+        query_logits = torch.einsum('bnk,bnhwd->bkhwd', cluster_classification, query_response)
+
+        return self.out(out), query_logits, cluster_assignment

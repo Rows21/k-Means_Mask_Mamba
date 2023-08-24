@@ -10,6 +10,50 @@ from timm.models.layers import trunc_normal_tf_ as trunc_normal_
 
 import math
 
+class MyBatchNorm_4d(nn.modules.batchnorm._BatchNorm):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1,
+                 affine=True, track_running_stats=True):
+        super(MyBatchNorm_4d, self).__init__(num_features, eps, momentum, affine, track_running_stats)
+    
+    def _check_input_dim(self, input):
+        if input.dim() != 6:
+            raise ValueError('expected 6D input (got {}D input)'
+                             .format(input.dim()))
+    def forward(self, input):
+        self._check_input_dim(input)
+
+        exponential_average_factor = 0.0
+
+        if self.training and self.track_running_stats:
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked += 1
+                if self.momentum is None:  # use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        # calculate running estimates
+        if self.training:
+            mean = input.mean([0, 2, 3, 4, 5])
+            # use biased var in train
+            var = input.var([0, 2, 3, 4, 5], unbiased=False)
+            n = input.numel() / input.size(1)
+            with torch.no_grad():
+                self.running_mean = exponential_average_factor * mean\
+                    + (1 - exponential_average_factor) * self.running_mean
+                # update running_var with unbiased var
+                self.running_var = exponential_average_factor * var * n / (n - 1)\
+                    + (1 - exponential_average_factor) * self.running_var
+        else:
+            mean = self.running_mean
+            var = self.running_var
+
+        input = (input - mean[None, :, None, None, None, None]) / (torch.sqrt(var[None, :, None, None, None, None] + self.eps))
+        if self.affine:
+            input = input * self.weight[None, :, None, None, None, None] + self.bias[None, :, None, None, None, None]
+
+        return input
+
 def get_activation(name):
     if name is None or name.lower() == 'none':
         return nn.Identity()
@@ -17,7 +61,7 @@ def get_activation(name):
         return nn.ReLU()
     elif name == 'gelu':
         return nn.GELU()
-    
+
 def get_norm(name, channels):
     if name is None or name.lower() == 'none':
         return nn.Identity()
@@ -30,6 +74,9 @@ def get_norm(name, channels):
 
     if name.lower() == '3d':
         return nn.BatchNorm3d(channels, eps=1e-3, momentum=0.01)
+    
+    if name.lower() == '4d':
+        return MyBatchNorm_4d(channels, eps=1e-3, momentum=0.01)
         
     if name.lower() == 'syncbn':
         return nn.SyncBatchNorm(channels, eps=1e-3, momentum=0.01)
@@ -77,7 +124,7 @@ def add_bias_towards_void(query_class_logits, void_prior_prob=0.9):
 
 # https://github.com/google-research/deeplab2/blob/main/model/kmax_deeplab.py#L32
 class kMaXPredictor(nn.Module):
-    def __init__(self, in_channel_pixel, in_channel_query, num_classes=133+1):
+    def __init__(self, in_channel_pixel, in_channel_query, num_classes=32+1):
         super().__init__()
         self._pixel_space_head_conv0bnact = ConvBN(in_channel_pixel, in_channel_pixel, kernel_size=5, groups=in_channel_pixel, padding=2, bias=False,
                                                    norm='3d', act='gelu', conv_init='xavier_uniform')
@@ -89,7 +136,7 @@ class kMaXPredictor(nn.Module):
         self._transformer_class_head = ConvBN(256, num_classes, kernel_size=1, norm=None, act=None, conv_type='1d')
         trunc_normal_(self._transformer_class_head.conv.weight, std=0.01)
 
-        self._pixel_space_mask_batch_norm = get_norm('', channels=1)
+        self._pixel_space_mask_batch_norm = get_norm('4d', channels=1)
         nn.init.constant_(self._pixel_space_mask_batch_norm.weight, 0.1)
 
 
@@ -107,20 +154,19 @@ class kMaXPredictor(nn.Module):
         mask_logits = torch.einsum('bchwd,bcn->bnhwd',
           pixel_space_normalized_feature, cluster_mask_kernel)
         
-        mask_logits = self._pixel_space_mask_batch_norm(mask_logits.unsqueeze(dim=1)).squeeze(dim=1)
-
+        mask_logits = self._pixel_space_mask_batch_norm(mask_logits.unsqueeze(dim=1)).squeeze(dim=1) # BN 6D Norm
 
         return {
-            'class_logits': cluster_class_logits,
-            'mask_logits': mask_logits,
-            'pixel_feature': pixel_space_normalized_feature}
+            'class_logits': cluster_class_logits, # Cluster Centers BCN
+            'mask_logits': mask_logits, # Query Response BNHWD
+            'pixel_feature': pixel_space_normalized_feature} # Pixel feature BCHWD
     
 # https://github.com/google-research/deeplab2/blob/7a01a7165e97b3325ad7ea9b6bcc02d67fecd07a/model/layers/dual_path_transformer.py#L41
 class AttentionOperation(nn.Module):
     def __init__(self, channels_v, num_heads):
         super().__init__()
-        self._batch_norm_similarity = get_norm('syncbn', num_heads)
-        self._batch_norm_retrieved_value = get_norm('syncbn', channels_v)
+        self._batch_norm_similarity = get_norm('2d', num_heads)
+        self._batch_norm_retrieved_value = get_norm('1d', channels_v)
 
     def forward(self, query, key, value):
         N, _, _, L = query.shape
@@ -142,7 +188,7 @@ class AttentionOperation(nn.Module):
 class kMaXTransformerLayer(nn.Module):
     def __init__(
         self,
-        num_classes=133,
+        num_classes=32,
         in_channel_pixel=2048,
         in_channel_query=256,
         base_filters=128,
@@ -150,7 +196,7 @@ class kMaXTransformerLayer(nn.Module):
         bottleneck_expansion=2,
         key_expansion=1,
         value_expansion=2,
-        # drop_path_prob=0.0,
+        drop_path_prob=0.0,
     ):
         super().__init__()
 
@@ -165,9 +211,9 @@ class kMaXTransformerLayer(nn.Module):
         # 2. self/cross-attetion for object query
         # 3. ffn for object query
 
-        # self.drop_path_kmeans = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity() 
-        # self.drop_path_attn = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity() 
-        # self.drop_path_ffn = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity() 
+        self.drop_path_kmeans = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity()
+        self.drop_path_attn = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity()
+        self.drop_path_ffn = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity()
 
         initialization_std = self._bottleneck_channels ** -0.5
         self._query_conv1_bn_act = ConvBN(in_channel_query, self._bottleneck_channels, kernel_size=1, bias=False,
@@ -177,7 +223,7 @@ class kMaXTransformerLayer(nn.Module):
                                           norm='3d', act='gelu')
 
         self._query_qkv_conv_bn = ConvBN(self._bottleneck_channels, self._total_key_depth * 2 + self._total_value_depth, kernel_size=1, bias=False,
-                                          norm='syncbn', act=None, conv_type='1d')
+                                          norm='1d', act=None, conv_type='1d')
         trunc_normal_(self._query_qkv_conv_bn.conv.weight, std=initialization_std)
 
         self._pixel_v_conv_bn = ConvBN(self._bottleneck_channels, self._total_value_depth, kernel_size=1, bias=False,
@@ -190,15 +236,15 @@ class kMaXTransformerLayer(nn.Module):
                                           norm='syncbn', act=None, conv_type='1d', norm_init=0.0)
 
         self._query_ffn_conv1_bn_act = ConvBN(in_channel_query, 2048, kernel_size=1, bias=False,
-                                          norm='syncbn', act='gelu', conv_type='1d')
+                                          norm='1d', act='gelu', conv_type='1d')
         self._query_ffn_conv2_bn = ConvBN(2048, in_channel_query, kernel_size=1, bias=False,
-                                          norm='syncbn', act=None, conv_type='1d', norm_init=0.0)
+                                          norm='1d', act=None, conv_type='1d', norm_init=0.0)
 
         self._predcitor = kMaXPredictor(in_channel_pixel=self._bottleneck_channels,
             in_channel_query=self._bottleneck_channels, num_classes=num_classes)
-        self._kmeans_query_batch_norm_retrieved_value = get_norm('syncbn', self._total_value_depth)
+        self._kmeans_query_batch_norm_retrieved_value = get_norm('1d', self._total_value_depth)
         self._kmeans_query_conv3_bn = ConvBN(self._total_value_depth, in_channel_query, kernel_size=1, bias=False,
-                                          norm='syncbn', act=None, conv_type='1d', norm_init=0.0)
+                                          norm='1d', act=None, conv_type='1d', norm_init=0.0)
 
 
     def forward(self, pixel_feature, query_feature):
