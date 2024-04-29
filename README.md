@@ -1,66 +1,45 @@
-### [3D UX-Net: A Large Kernel Volumetric ConvNet Modernizing Hierarchical Transformer for Medical Image Segmentation](https://arxiv.org/abs/2209.15076)
+### [Semi-supervised Medical Image Segmentation via Query Distribution Consistency](https://arxiv.org/abs/2311.12364)
 
-Official Pytorch implementation of 3D UX-Net, from the following paper:
+Official Pytorch implementation of DKUX-Net, from the following paper:
 
-[3D UX-Net: A Large Kernel Volumetric ConvNet Modernizing Hierarchical Transformer for Medical Image Segmentation](https://arxiv.org/abs/2209.15076). ICLR 2023 (Accepted, Poster) \
-Ho Hin Lee, Shunxing Bao, [Yuankai Huo](https://hrlblab.github.io/), [Bennet A. Landman](https://my.vanderbilt.edu/masi/people/bennett-landman-ph-d/) \
-Vanderbilt University \
-[[`arXiv`](https://arxiv.org/abs/2209.15076)]
+[Semi-supervised Medical Image Segmentation via Query Distribution Consistency](https://arxiv.org/abs/2311.12364). ISBI 2024 (Accepted) \
+Rong Wu, Dehua Li, and Cong Zhang\
+DecisionLinnc Dev Group \
+[[`arXiv`](https://arxiv.org/abs/2311.12364)]
 
 ---
 
 <p align="center">
-<img src="screenshots/Figure_1.png" width=100% height=40% 
+<img src="/screenshots/Figure_1.jpg" width=100% height=40% 
 class="center">
 </p>
 
 <p align="center">
-<img src="screenshots/Figure_2.png" width=100% height=40% 
+<img src="/screenshots/Figure_2.jpg" width=100% height=40% 
 class="center">
 </p>
 
-We propose **3D UX-Net**, a pure volumetric convolutional network to adapt hierarchical transformers behaviour (e.g. Swin Transformer) for Medical Image Segmentation with less model parameters.
+We propose **DKUX-Net**, a transformer-based network for Medical Image Segmentation with less model parameters.
 
  ## Installation
  Please look into the [INSTALL.md](INSTALL.md) for creating conda environment and package installation procedures.
 
  ## Training Tutorial
- - [x] FeTA 2021, FLARE 2021 Training Code [TRAINING.md](TRAINING.md)
- - [x] AMOS 2022 Finetuning Code [TRAINING.md](TRAINING.md)
+ - [x] LA 2018
  
  (Feel free to post suggestions in issues of recommending latest proposed transformer network for comparison. Currently, the network folder is to put the current SOTA transformer. We can further add the recommended network in it for training.)
  
  <!-- ✅ ⬜️  -->
  
  ## Results 
- ### FeTA 2021 Trained Models (5-folds cross-validation)
- | Methods | resolution | #params | FLOPs | Mean Dice | Model
-|:---:|:---:|:---:|:---:| :---:|:---:|
-| TransBTS | 96x96x96 | 31.6M | 110.4G | 0.868 | |
-| UNETR | 96x96x96 | 92.8M | 82.6G | 0.860 | |
-| nnFormer | 96x96x96 | 149.3M | 240.2G | 0.863 | |
-| SwinUNETR | 96x96x96 | 62.2M | 328.4G | 0.867 | |
-| 3D UX-Net | 96x96x96 | 53.0M | 639.4G | 0.874 | [Weights](https://drive.google.com/file/d/1AqJMIM2w8OGGiN1FonmZqNoRHd2x5fTL/view?usp=share_link)
-
-### FLARE 2021 Trained Models (5-folds cross-validation)
+### LA 2018 Trained Models
 | Methods | resolution | #params | FLOPs | Mean Dice | Model 
 |:---:|:---:|:---:|:---:| :---:|:---:|
 | TransBTS | 96x96x96 | 31.6M | 110.4G | 0.902 | | 
 | UNETR | 96x96x96 | 92.8M | 82.6G | 0.886 | |
 | nnFormer | 96x96x96 | 149.3M | 240.2G | 0.906 | |
 | SwinUNETR | 96x96x96 | 62.2M | 328.4G | 0.929 | |
-| 3D UX-Net | 96x96x96 | 53.0M | 639.4G | 0.936 (latest)| [Weights](https://drive.google.com/file/d/1APxKmq3MuueY4KtuKAZG3vs3vPLetLaK/view?usp=share_link)
-
-
-
- ### AMOS 2022 Fine-tuned Models 
- | Methods | resolution | #params | FLOPs | Mean Dice (AMOS2022) | Model 
-|:---:|:---:|:---:|:---:| :---:|:---:|
-| TransBTS | 96x96x96 | 31.6M | 110.4G | 0.792 |
-| UNETR | 96x96x96 | 92.8M | 82.6G | 0.762 | 
-| nnFormer | 96x96x96 | 149.3M | 240.2G | 0.790 | 
-| SwinUNETR | 96x96x96 | 62.2M | 328.4G | 0.880 | 
-| 3D UX-Net | 96x96x96 | 53.0M | 639.4G | 0.900 (kernel=7) | [Weights](https://drive.google.com/file/d/1G8uhjKh8392UFtGsMeolO__Lmz3GLAiG/view?usp=share_link)
+| 3D UX-Net | 96x96x96 | 53.0M | 639.4G | 0.936 (latest)| [Weights]()
 
 <!-- ✅ ⬜️  -->
 ## Training
@@ -84,12 +63,7 @@ This project is released under the MIT license. Please see the [LICENSE](LICENSE
 ## Citation
 If you find this repository helpful, please consider citing:
 ```
-@article{lee20223d,
-  title={3D UX-Net: A Large Kernel Volumetric ConvNet Modernizing Hierarchical Transformer for Medical Image Segmentation},
-  author={Lee, Ho Hin and Bao, Shunxing and Huo, Yuankai and Landman, Bennett A},
-  journal={arXiv preprint arXiv:2209.15076},
-  year={2022}
-}
+
 ```
 
  

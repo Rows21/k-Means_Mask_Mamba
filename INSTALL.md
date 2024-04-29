@@ -1,6 +1,6 @@
 # Installation Tutorial
 
-We provide step-by-step installation instructions to create the corresponding environment for using 3D UX-Net and demonstrates the corresponding folder structure to input data samples.
+We provide step-by-step installation instructions to create the corresponding environment for using DK UX-Net and demonstrates the corresponding folder structure to input data samples.
 
 
 ## Conda Environment Setup
@@ -28,11 +28,9 @@ pip install -r requirements.txt
 We initially divide different datasets in the following structure:
 
     path to all data directory/
-    ├── FeTA2021
     ├── FLARE2021
     ├── AMOS2022
     ├── BTCV2015
-    ├── LiTS2017
     ├── ...
 
 We further sub-divide the samples into training, validation and testing as follow:

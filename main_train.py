@@ -34,8 +34,8 @@ import argparse
 if __name__ == '__main__': 
     parser = argparse.ArgumentParser(description='3D UX-Net hyperparameters for medical image segmentation')
     ## Input data hyperparameters
-    parser.add_argument('--root', type=str, default='D:/Github/3DUX-Net/datasets/FLARE2021', help='')
-    parser.add_argument('--output', type=str, default='D:/Github/3DUX-Net/outputs', help='')
+    parser.add_argument('--root', type=str, default='C:/Users/Programer/Downloads/matdisk/datasets/FLARE2021', help='')
+    parser.add_argument('--output', type=str, default='C:/Users/Programer/Downloads/matdisk/outputs', help='')
     parser.add_argument('--dataset', type=str, default='flare', help='Datasets: {feta, flare, amos}, Fyi: You can add your dataset here')
 
     ## Input model & training hyperparameters
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     parser.add_argument('--eval_step', type=int, default=500, help='Per steps to perform validation')
 
     ## Efficiency hyperparameters
-    parser.add_argument('--gpu', type=str, default='1', help='your GPU number')
+    parser.add_argument('--gpu', type=str, default='0', help='your GPU number')
     parser.add_argument('--cache_rate', type=float, default=0.1, help='Cache rate to cache your dataset into GPUs')
     parser.add_argument('--num_workers', type=int, default=2, help='Number of workers')
 
@@ -92,8 +92,8 @@ if __name__ == '__main__':
 
 
     ## Load Networks
-    device = torch.device("cuda:0")
-    # device = torch.device("cpu")
+    # device = torch.device("cuda:0")
+    device = torch.device("cpu")
     if args.network == '3DUXNET':
         model = UXNET(
             in_chans=1,
@@ -103,7 +103,7 @@ if __name__ == '__main__':
             drop_path_rate=0,
             layer_scale_init_value=1e-6,
             spatial_dims=3,
-        ).to(device)
+        ).to("cpu")
     elif args.network == 'SwinUNETR':
         model = SwinUNETR(
             img_size=(96, 96, 96),
