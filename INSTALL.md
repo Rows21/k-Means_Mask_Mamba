@@ -1,22 +1,22 @@
 # Installation Tutorial
 
-We provide step-by-step installation instructions to create the corresponding environment for using DK UX-Net and demonstrates the corresponding folder structure to input data samples.
+We provide step-by-step installation instructions to create the corresponding environment for using DKUNet and demonstrates the corresponding folder structure to input data samples.
 
 
 ## Conda Environment Setup
 Create your own conda environment 
 ```
-conda create -n uxnet3d python=3.8
-conda activate uxnet3d
+conda create -n dkunet python=3.9
+conda activate dkunet
 ```
 
-Install [Pytorch](https://pytorch.org/) == 1.12.1, [torchvision](https://pytorch.org/vision/stable/index.html) == 0.13.1, cudatooltookit == 11.6.0 (depends on your NVIDIA driver and you can see your compatible CUDA version at the right hand corner in nvidia-smi)
+Install [Pytorch](https://pytorch.org/) == 1.12.1, [torchvision](https://pytorch.org/vision/stable/index.html) == 0.13.1, cudatooltookit == 11.6.0 
 ```
 conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
 ```
-Install [monai](https://github.com/Project-MONAI/MONAI) == 0.9.0
+Install [monai](https://github.com/Project-MONAI/MONAI)
 ```
-pip install monai==0.9.0
+pip install monai
 ```
 Clone this repository and install other required packages:
 ```
@@ -28,9 +28,7 @@ pip install -r requirements.txt
 We initially divide different datasets in the following structure:
 
     path to all data directory/
-    ├── FLARE2021
-    ├── AMOS2022
-    ├── BTCV2015
+    ├── LA2018
     ├── ...
 
 We further sub-divide the samples into training, validation and testing as follow:

@@ -372,7 +372,6 @@ class DKUNET(nn.Module):
         del enc1
         # out = self.decoder1(dec0)
 
-
         multi_scale_features = [dec3,dec2] # dec1
         # panoptic_features = [dec0]
         # semantic_feature = [dec3,dec1,dec0]

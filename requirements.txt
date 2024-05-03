@@ -8,3 +8,5 @@ ptflops
 nibabel
 pillow
 timm
+batchgenerators
+volumentations
