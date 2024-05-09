@@ -8,7 +8,7 @@ Created on Sat Jul  3 11:06:19 2021
 
 from monai.utils import set_determinism
 from monai.transforms import AsDiscrete
-from networks.UXNet_3D.network_backbone import UXNET
+from networks.DKUNet.network_backbone import UXNET
 from monai.networks.nets import UNETR, SwinUNETR
 from networks.nnFormer.nnFormer_seg import nnFormer
 from networks.TransBTS.TransBTS_downsample8x_skipconnection import TransBTS

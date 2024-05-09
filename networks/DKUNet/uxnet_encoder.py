@@ -110,10 +110,7 @@ class uxnet_conv(nn.Module):
         super().__init__()
 
         self.downsample_layers = nn.ModuleList() # stem and 3 intermediate downsampling conv layers
-        # stem = nn.Sequential(
-        #     nn.Conv3d(in_chans, dims[0], kernel_size=7, stride=2, padding=3),
-        #     LayerNorm(dims[0], eps=1e-6, data_format="channels_first")
-        # )
+
         stem = nn.Sequential(
               nn.Conv3d(in_chans, dims[0], kernel_size=7, stride=2, padding=3),
               LayerNorm(dims[0], eps=1e-6, data_format="channels_first")

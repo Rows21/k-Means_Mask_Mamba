@@ -17,7 +17,6 @@ import torchvision
 from load_datasets_transforms import SSLDataset, LAHeart, data_loader, data_transforms, infer_post_transforms
 from load_datasets_transforms import Resize
 
-
 import os
 import tqdm
 import numpy as np

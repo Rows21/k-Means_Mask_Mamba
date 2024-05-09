@@ -1,0 +1,5 @@
+09_AMOS/img/amos_0001.nii.gz	09_AMOS/label/amos_0001.nii.gz
+09_AMOS/img/amos_0005.nii.gz	09_AMOS/label/amos_0005.nii.gz
+09_AMOS/img/amos_0006.nii.gz	09_AMOS/label/amos_0006.nii.gz
+09_AMOS/img/amos_0009.nii.gz	09_AMOS/label/amos_0009.nii.gz
+09_AMOS/img/amos_0010.nii.gz	09_AMOS/label/amos_0010.nii.gz
