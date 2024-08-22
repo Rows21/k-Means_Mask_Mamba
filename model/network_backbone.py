@@ -17,10 +17,10 @@ from typing import Union
 import torch.nn.functional as F
 from lib.utils.tools.logger import Logger as Log
 from lib.models.tools.module_helper import ModuleHelper
-from networks.DKUNet.uxnet_encoder import uxnet_conv
 from timm.models.layers import trunc_normal_tf_ as trunc_normal_
 
-from networks.DKUNet.transformer_decoder import ConvBN, kMaXTransformerLayer, kMaXPredictor
+from uxnet_encoder import uxnet_conv
+from transformer_decoder import ConvBN, kMaXTransformerLayer, kMaXPredictor
 
 from torch.cuda.amp import autocast
 
@@ -49,7 +49,6 @@ class MLP(nn.Module):
         self.fc2 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
-        # 将B和N维度合并
         x = x.view(x.size(0), -1)
         x = self.fc1(x)
         x = torch.relu(x)

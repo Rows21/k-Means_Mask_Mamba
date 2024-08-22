@@ -1,0 +1,6 @@
+02_TCIA_Pancreas-CT/img/PANCREAS_0002.nii.gz	02_TCIA_Pancreas-CT/multiorgan_label/label0002.nii.gz
+01_Multi-Atlas_Labeling/img/img0001.nii.gz	01_Multi-Atlas_Labeling/label/label0001.nii.gz
+03_CHAOS/ct/img/1_image.nii.gz	03_CHAOS/ct/liver_label/1_segmentation.nii.gz
+09_AMOS/img/amos_0001.nii.gz	09_AMOS/label/amos_0001.nii.gz
+07_WORD/img/word_0001.nii.gz	07_WORD/label/word_0001.nii.gz
+12_CT-ORG/img/volume-2.nii.gz	12_CT-ORG/label/labels-2.nii.gz

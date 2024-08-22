@@ -13,7 +13,7 @@ from iou import MeanIoU
 from monai.metrics import DiceMetric, HausdorffDistanceMetric, SurfaceDistanceMetric
 from medpy import metric
 import torch
-from dataloader import SSLDataset, LAHeart, data_loader, data_transforms, infer_post_transforms
+from load_datasets_transforms import SSLDataset, LAHeart, data_loader, data_transforms, infer_post_transforms
 
 import os
 import tqdm

@@ -7,6 +7,20 @@ import scipy.ndimage as nd
 from matplotlib import pyplot as plt
 from torch import Tensor, einsum
 
+def get_template_key(b, name, TEMPLATE):
+
+    dataset_index = int(name[b][0:2])
+    if dataset_index == 10:
+        template_key = name[b][0:2] + '_' + name[b][17:19]
+    elif dataset_index == 1:
+        if int(name[b][-2:]) >= 60:
+            template_key = '01_2'
+        else:
+            template_key = '01'
+    else:
+        template_key = name[b][0:2]
+    organ_list = TEMPLATE[template_key]
+    return organ_list
 
 class BinaryDiceLoss(nn.Module):
     def __init__(self, smooth=1, p=2, reduction='mean'):
@@ -44,21 +58,9 @@ class DiceLoss(nn.Module):
         total_loss = []
         predict = F.sigmoid(predict)
 
-        total_loss = []
         B = predict.shape[0]
-
         for b in range(B):
-            dataset_index = int(name[b][0:2])
-            if dataset_index == 10:
-                template_key = name[b][0:2] + '_' + name[b][17:19]
-            elif dataset_index == 1:
-                if int(name[b][-2:]) >= 60:
-                    template_key = '01_2'
-                else:
-                    template_key = '01'
-            else:
-                template_key = name[b][0:2]
-            organ_list = TEMPLATE[template_key]
+            organ_list = get_template_key(b, name, TEMPLATE)
             for organ in organ_list:
                 dice_loss = self.dice(predict[b, organ-1], target[b, organ-1])
                 total_loss.append(dice_loss)
@@ -66,8 +68,6 @@ class DiceLoss(nn.Module):
         total_loss = torch.stack(total_loss)
 
         return total_loss.sum()/total_loss.shape[0]
-
-        
 
 class Multi_BCELoss(nn.Module):
     def __init__(self, ignore_index=None, num_classes=3, **kwargs):
@@ -84,17 +84,7 @@ class Multi_BCELoss(nn.Module):
         B = predict.shape[0]
 
         for b in range(B):
-            dataset_index = int(name[b][0:2])
-            if dataset_index == 10:
-                template_key = name[b][0:2] + '_' + name[b][17:19]
-            elif dataset_index == 1:
-                if int(name[b][-2:]) >= 60:
-                    template_key = '01_2'
-                else:
-                    template_key = '01'
-            else:
-                template_key = name[b][0:2]
-            organ_list = TEMPLATE[template_key]
+            organ_list = get_template_key(b, name, TEMPLATE)
             for organ in organ_list:
                 ce_loss = self.criterion(predict[b, organ-1], target[b, organ-1])
                 total_loss.append(ce_loss)

@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 import warnings
 from torch.utils.tensorboard import SummaryWriter
-from dataloader import SSLDataset, data_loader, data_transforms, LAHeart
+from load_datasets_transforms import SSLDataset, data_loader, data_transforms, LAHeart
 
 import os
 import numpy as np

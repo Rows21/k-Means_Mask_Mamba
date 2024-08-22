@@ -278,7 +278,7 @@ class SwinUNETR(nn.Module):
         # print(dec3.shape, dec2.shape, dec1.shape, dec0.shape, out.shape)
         # torch.Size([6, 384, 4, 4, 4]) torch.Size([6, 192, 8, 8, 8]) torch.Size([6, 96, 16, 16, 16]) 
         # torch.Size([6, 48, 32, 32, 32]) torch.Size([6, 48, 64, 64, 64])
-        return dec4, out
+        return dec4, hidden_states_out[::-1][1:], out
 
 
 def window_partition(x, window_size):

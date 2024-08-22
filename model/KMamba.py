@@ -1,5 +1,6 @@
 from typing import Sequence, Tuple, Type, Union
 
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,15 +12,54 @@ from model.Unet import UNet3D
 from model.DiNTS import TopologyInstance, DiNTS
 from model.Unetpp import BasicUNetPlusPlus
 from model.transformer_decoder import ConvBN, kMaXTransformerLayer, kMaXPredictor
+from model.TextAttend import TextAttend
+from scipy.optimize import linear_sum_assignment
+
 from timm.models.layers import trunc_normal_tf_ as trunc_normal_
+from model.sdm import SDM
+#from matcher import batch_sigmoid_focal_loss, batch_dice_loss
+
+class SinusoidalPositionEmbeddings(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, time):
+        device = time.device
+        half_dim = self.dim // 2
+        embeddings = math.log(10000) / (half_dim - 1)
+        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
+        embeddings = time[:, None] * embeddings[None, :]
+        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
+        return embeddings
 
 
+class MLP(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
 
+    def forward(self, x):
+        x = x.view(x.size(0), -1)
+        x = self.fc1(x)
+        x = torch.relu(x)
+        x = self.fc2(x)
+        return x
+    
 class KMamba(nn.Module):
-    def __init__(self, img_size, in_channels, out_channels, backbone = 'swinunetr', encoding = 'rand_embedding'):
+    def __init__(self, img_size, in_channels, out_channels, 
+                 cls_organ, 
+                 backbone = 'swinunetr', 
+                 stage = 'I', 
+                 gumbel = False,
+                 encoding = 'rand_embedding'):
         # encoding: rand_embedding or word_embedding
         super().__init__()
         self.backbone_name = backbone
+        self.stage = stage
+        cls_channel = 512
+        #out_channels = out_channels + 1
         if backbone == 'swinunetr':
             self.backbone = SwinUNETR(img_size=img_size,
                         in_channels=in_channels,
@@ -30,17 +70,29 @@ class KMamba(nn.Module):
                         dropout_path_rate=0.0,
                         use_checkpoint=False,
                         )
-            self.precls_conv = nn.Sequential(
-                nn.GroupNorm(16, 48),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(48, 8, kernel_size=1)
+            in_dims = [768, 384, 192, 96]
+            dims = [384, 192, 96, 48]
+            self.kmax_channel = dims
+            pixel_out = 48
+            projection = pixel_out
+            self.post_slayer = SDM(48, 48)
+            self.post_dlayer = nn.Sequential(
+                ConvBN(96, 48, kernel_size=1, bias=False, norm='3d', act='relu'),
+                ConvBN(48, 48, kernel_size=1, bias=False, norm='3d', act='relu'),
+                
             )
-            self.GAP = nn.Sequential(
-                nn.GroupNorm(16, 768),
-                nn.ReLU(inplace=True),
-                torch.nn.AdaptiveAvgPool3d((1,1,1)),
-                nn.Conv3d(768, 256, kernel_size=1, stride=1, padding=0)
-            )
+            if self.stage != 'I':
+                self.precls_conv = nn.Sequential(
+                    nn.GroupNorm(16, 48),
+                    nn.ReLU(inplace=True),
+                    nn.Conv3d(48, 8, kernel_size=1)
+                )
+                self.GAP = nn.Sequential(
+                    nn.GroupNorm(16, 768),
+                    nn.ReLU(inplace=True),
+                    torch.nn.AdaptiveAvgPool3d((1,1,1)),
+                    nn.Conv3d(768, 256, kernel_size=1, stride=1, padding=0)
+                )
         elif backbone == 'unet':
             self.backbone = UNet3D()
             self.precls_conv = nn.Sequential(
@@ -48,13 +100,23 @@ class KMamba(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv3d(64, 8, kernel_size=1)
             )
-            self.GAP = nn.Sequential(
-                nn.GroupNorm(16, 512),
-                nn.ReLU(inplace=True),
-                torch.nn.AdaptiveAvgPool3d((1,1,1)),
-                nn.Conv3d(512, 256, kernel_size=1, stride=1, padding=0)
-            )
-            self.kmax_channel = [256,128]
+            if self.stage != 'I':
+                self.precls_conv = nn.Sequential(
+                    nn.GroupNorm(16, 64),
+                    nn.ReLU(inplace=True),
+                    nn.Conv3d(64, 8, kernel_size=1)
+                )
+                self.GAP = nn.Sequential(
+                    nn.GroupNorm(16, 512),
+                    nn.ReLU(inplace=True),
+                    torch.nn.AdaptiveAvgPool3d((1,1,1)),
+                    nn.Conv3d(512, 256, kernel_size=1, stride=1, padding=0)
+                )
+            in_dims = [512, 256, 128]
+            dims = [256, 128, 64]
+            pixel_out = 64
+            projection = pixel_out
+            self.kmax_channel = dims
         elif backbone == 'dints':
             ckpt = torch.load('./model/arch_code_cvpr.pth')
             node_a = ckpt["node_a"]
@@ -76,17 +138,18 @@ class KMamba(nn.Module):
                     use_downsample=True,
                     node_a=node_a,
                 )
-            self.precls_conv = nn.Sequential(
-                nn.GroupNorm(16, 32),
-                nn.ReLU(inplace=True),
-                nn.Conv3d(32, 8, kernel_size=1)
-            )
-            self.GAP = nn.Sequential(
-                nn.GroupNorm(16, 512),
-                nn.ReLU(inplace=True),
-                torch.nn.AdaptiveAvgPool3d((1,1,1)),
-                nn.Conv3d(512, 256, kernel_size=1, stride=1, padding=0)
-            )
+            if self.stage != 'I':
+                self.precls_conv = nn.Sequential(
+                    nn.GroupNorm(16, 32),
+                    nn.ReLU(inplace=True),
+                    nn.Conv3d(32, 8, kernel_size=1)
+                )
+                self.GAP = nn.Sequential(
+                    nn.GroupNorm(16, 512),
+                    nn.ReLU(inplace=True),
+                    torch.nn.AdaptiveAvgPool3d((1,1,1)),
+                    nn.Conv3d(512, 256, kernel_size=1, stride=1, padding=0)
+                )
         elif backbone == 'unetpp':
             self.backbone = BasicUNetPlusPlus(spatial_dims=3, features=(32, 32, 64, 128, 256, 32))
             self.precls_conv = nn.Sequential(
@@ -105,45 +168,98 @@ class KMamba(nn.Module):
 
         self.encoding = encoding
 
-        weight_nums, bias_nums = [], []
-        weight_nums.append(8*8)
-        weight_nums.append(8*8)
-        weight_nums.append(8*1)
-        bias_nums.append(8)
-        bias_nums.append(8)
-        bias_nums.append(1)
-        self.weight_nums = weight_nums
-        self.bias_nums = bias_nums
-        self.controller = nn.Conv3d(256+256, sum(weight_nums+bias_nums), kernel_size=1, stride=1, padding=0)
-        if self.encoding == 'rand_embedding':
-            self.organ_embedding = nn.Embedding(out_channels, 256)
-        elif self.encoding == 'word_embedding':
+        if self.stage == 'I':
+            self.organ_embedding = nn.Embedding(out_channels, 512)
+        elif self.stage == 'II':
             self.register_buffer('organ_embedding', torch.randn(out_channels, 512))
             self.text_to_vision = nn.Linear(512, 256)
-        self.class_num = out_channels
 
+            
+        self.out_channels = out_channels
+        self.cls_organ = cls_organ
+        self.cls_tumor = out_channels - cls_organ
         # learnable query features
-        self._cluster_centers = nn.Embedding(256, out_channels)
+        self._cluster_centers = nn.Embedding(cls_channel, out_channels)
+        
         trunc_normal_(self._cluster_centers.weight, std=1.0)
+        self._class_embedding_projection = nn.Linear(cls_channel, 256)#ConvBN(cls_channel, 256, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
+        self._mask_embedding_projection = nn.Linear(cls_channel, 256)#ConvBN(cls_channel, 256, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
+        self._diff_embedding_projection = ConvBN(cls_channel, projection, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
+        self._predcitor = kMaXPredictor(in_channel_pixel=pixel_out,in_channel_query=256, num_classes=cls_organ)
 
         # kmax transformer decoder
         self._kmax_transformer_layers = nn.ModuleList()
         for index, output_stride in enumerate(self.kmax_channel):
-            for _ in range(2):
+            for _ in range(1):
                 print(output_stride)
                 self._kmax_transformer_layers.append(kMaXTransformerLayer(
                     num_classes=out_channels,
                     in_channel_pixel=output_stride,
-                    in_channel_query=256,
+                    in_channel_query=cls_channel,
                     base_filters=128,
                     num_heads=8,
                     bottleneck_expansion=2,
                     key_expansion=1,
-                    value_expansion=2
+                    value_expansion=2,
+                    gumbel=gumbel
                     #drop_path_prob=drop_path_prob
                     )
                 )
+        
+        # tumor transformer
+        #change for text embedding, full text for 768
+        self.up = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=True)
+        TextAttendLayers = []
+        SDMLayers = []
+        DDecoders = []
+        for i in range(len(self.kmax_channel)):
+            slayer = SDM(dims[i], in_dims[i])
+            dlayer = nn.Sequential(
+                ConvBN(in_dims[i] + dims[i], dims[i], kernel_size=1, bias=False, norm='3d', act='relu'),
+                ConvBN(dims[i], dims[i], kernel_size=1, bias=False, norm='3d', act='relu'),
+                
+            )
+            layer = TextAttend(dim=dims[i], 
+                    out_dim=cls_channel, 
+                    num_heads=8, 
+                    norm_layer=nn.LayerNorm, 
+                    in_features=in_dims[i], 
+                    mlp_ratio=4, 
+                    hard=True, 
+                    gumbel=True, 
+                    sum_assign=False, 
+                    assign_eps=1., 
+                    gumbel_tau=1.)
+            SDMLayers.append(slayer)
+            DDecoders.append(dlayer)
+            TextAttendLayers.append(layer)
+            
+        self.sdm_layers = nn.ModuleList(SDMLayers)
+        self.ddecoder_layers = nn.ModuleList(DDecoders)
+        self.text_attend_layers = nn.ModuleList(TextAttendLayers)
 
+        self._projection = nn.Sequential(
+            ConvBN(projection, projection, kernel_size=5, groups=projection, padding=2, bias=False,
+                                                   norm='3d', act='gelu', conv_init='xavier_uniform'),
+            ConvBN(projection, projection, kernel_size=1, bias=False, norm='3d', act='gelu'),
+            ConvBN(projection, projection, kernel_size=1, bias=True, norm='3d', act=None)
+        )
+        self.controller = nn.Linear(512, pixel_out)
+        self.softmax = nn.Softmax(dim=1)
+        
+    def get_sim_logits(
+        self,
+        text_features: torch.Tensor,
+        image_features: torch.Tensor,
+        temperature: float = 100,
+    ):
+        sim_logits = temperature * image_features.matmul(text_features.transpose(-1,-2))
+        log_scale = torch.diagonal(sim_logits, dim1=1, dim2=2)/torch.sum(sim_logits, dim=1)
+        return log_scale
+    
+    def normalize_feature(self, feat: torch.Tensor):
+        return feat / feat.norm(dim=-1, keepdim=True)
+    
     def load_params(self, model_dict):
         if self.backbone_name == 'swinunetr':
             store_dict = self.backbone.state_dict()
@@ -168,32 +284,6 @@ class KMamba(nn.Module):
             task_encoding[i, task_id[i]]=1
         return task_encoding.cuda()
 
-    def parse_dynamic_params(self, params, channels, weight_nums, bias_nums):
-        assert params.dim() == 2
-        assert len(weight_nums) == len(bias_nums)
-        assert params.size(1) == sum(weight_nums) + sum(bias_nums)
-
-        num_insts = params.size(0)
-        num_layers = len(weight_nums)
-
-        params_splits = list(torch.split_with_sizes(
-            params, weight_nums + bias_nums, dim=1
-        ))
-
-        weight_splits = params_splits[:num_layers]
-        bias_splits = params_splits[num_layers:]
-
-        for l in range(num_layers):
-            if l < num_layers - 1:
-                weight_splits[l] = weight_splits[l].reshape(num_insts * channels, -1, 1, 1, 1)
-                bias_splits[l] = bias_splits[l].reshape(num_insts * channels)
-            else:
-                weight_splits[l] = weight_splits[l].reshape(num_insts * 1, -1, 1, 1, 1)
-                bias_splits[l] = bias_splits[l].reshape(num_insts * 1)
-            # print(weight_splits[l].shape, bias_splits[l].shape)
-
-        return weight_splits, bias_splits
-
     def heads_forward(self, features, weights, biases, num_insts):
         assert features.dim() == 5
         n_layers = len(weights)
@@ -208,50 +298,78 @@ class KMamba(nn.Module):
             if i < n_layers - 1:
                 x = F.relu(x)
         return x
-
+    
+    def anomaly_score(self, anomaly):
+        anomaly_mask = anomaly > 0.5
+        anomaly[anomaly_mask] = anomaly[anomaly_mask] * 0.2
+        anomaly[~anomaly_mask] = -1.0 # anomaly[~anomaly_mask] * 0.0
+        anomaly = anomaly.unsqueeze(1).repeat(1, self.out_channels, 1, 1, 1)
+        return anomaly
+    
     def forward(self, x_in):
-        dec4, outs = self.backbone(x_in)
-        # =================================================================================
-        if self.encoding == 'rand_embedding':
-            task_encoding = self.organ_embedding.weight.unsqueeze(2).unsqueeze(2).unsqueeze(2)
-        elif self.encoding == 'word_embedding':
-            task_encoding = F.relu(self.text_to_vision(self.organ_embedding))
-            task_encoding = task_encoding.unsqueeze(2).unsqueeze(2).unsqueeze(2)
+        dec4, feats, out = self.backbone(x_in)
+        B, C, H, W, D= out.size()
+        N = self.out_channels
         # task_encoding torch.Size([31, 256, 1, 1, 1])
-        B=2
         cluster_centers = self._cluster_centers.weight.unsqueeze(0).repeat(B, 1, 1) # B x C x L
+        anomaly_maps = []
         
+        if self.stage == 'I': # =====STAGE II: TEXT -> IMAGE BRANCH
+            task_encoding = self.organ_embedding.weight
+        elif self.stage == 'II':
+            task_encoding = self.organ_embedding
+            task_encoding = task_encoding.unsqueeze(0).repeat(B, 1, 1)
+            
+        # =====STAGE I: KMAX TRANSFORMER
         # dual-path transformer
         current_transformer_idx = 0 
-        for i, feat in enumerate(outs[:-1]): # multi_scale_features = [dec3,dec2,dec1]
-            
-            for _ in range(2):
-                cluster_centers, _ = self._kmax_transformer_layers[current_transformer_idx](
+        for i, feat in enumerate(feats): # multi_scale_features = [dec3, dec2, dec1]
+            for _ in range(1):
+                cluster_centers, anomaly = self._kmax_transformer_layers[current_transformer_idx](
                         pixel_feature=feat, query_feature=cluster_centers
                     )
-                #predictions_class.append(prediction_result['class_logits'])
-                #predictions_mask.append(prediction_result['mask_logits'])
-                #predictions_pixel_feature.append(prediction_result['pixel_feature'])
                 current_transformer_idx += 1
+            anomaly = self.anomaly_score(anomaly)
+            anomaly_maps.append(anomaly)
 
-        x_feat = self.GAP(dec4)
-        B = x_feat.shape[0]
-        logits_array = []
-        for i in range(B):
-            x_cond = torch.cat([x_feat[i].unsqueeze(0).repeat(self.class_num,1,1,1,1), task_encoding], 1)
-            params = self.controller(x_cond)
-            params.squeeze_(-1).squeeze_(-1).squeeze_(-1) # 32 * 153
+        class_embeddings = self._class_embedding_projection(cluster_centers.transpose(1,2)).transpose(1,2)
+        mask_embeddings = self._mask_embedding_projection(cluster_centers.transpose(1,2)).transpose(1,2)
+        if self.stage == 'I':
+            _, logits = self._predcitor(
+                class_embeddings=class_embeddings,
+                mask_embeddings=mask_embeddings,
+                pixel_feature=out,
+            )
+            logits_out = self.softmax(logits)
+        # =====STAGE II: Diffusion Guided            
+        elif self.stage == 'II':
+            cluster_centers = cluster_centers.transpose(1, 2)
+            d_feat = dec4
             
-            head_inputs = self.precls_conv(outs[-1][i].unsqueeze(0)) # 1 8 96 96 96
-            head_inputs = head_inputs.repeat(self.class_num,1,1,1,1) # 32 8 96 96 96 
-            N, _, D, H, W = head_inputs.size()
-            head_inputs = head_inputs.reshape(1, -1, D, H, W) # 1 256 96 96 96  
-            # print(head_inputs.shape, params.shape)
-            weights, biases = self.parse_dynamic_params(params, 8, self.weight_nums, self.bias_nums)
+            for i in range(len(self.text_attend_layers)):
 
-            logits = self.heads_forward(head_inputs, weights, biases, N)
-            logits_array.append(logits.reshape(1, -1, D, H, W))
+                d_feat = self.up(d_feat)
+                feats[i] = self.sdm_layers[i](feats[i], d_feat)
+                d_feat = self.ddecoder_layers[i](torch.cat((d_feat, feats[i]), 1))
+                cluster_centers, _ = self.text_attend_layers[i](feats[i], cluster_centers, anomaly_maps[i])
+
+            if self.backbone_name == 'swinunetr':
+                d_feat = self.up(d_feat)
+                out = self.post_slayer(out, d_feat)
+                d_feat = self.post_dlayer(torch.cat((d_feat, out), 1))
+
+            d_feat = self._projection(d_feat)
+            out = F.normalize(d_feat, p=2, dim=1)
+            log_scale = self.get_sim_logits(task_encoding, self.normalize_feature(cluster_centers))
+            cluster_centers = cluster_centers.transpose(1, 2)
+            #cluster_centers[torch.arange(cluster_centers.shape[1]), sim_logits.argmax(dim=-1)]
+            
+            class_embeddings = self._diff_embedding_projection(cluster_centers)
+            #weights = self.controller(class_embeddings).permute(0,2,1)
+            logits = out.flatten(start_dim=2, end_dim=4).transpose(1, 2) @ class_embeddings
+            logits = torch.einsum('bln,bn->bln', logits, log_scale)
         
-        out = torch.cat(logits_array,dim=0) # 2 32 96 96 96 
-        # print(out.shape)
-        return out
+            logits_out = logits.transpose(1, 2).reshape(B, N, H, W, D)
+            logits_out = self.softmax(logits_out)
+        
+        return logits_out

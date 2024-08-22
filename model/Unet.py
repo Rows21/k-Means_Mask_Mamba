@@ -131,5 +131,5 @@ class UNet3D(nn.Module):
         self.out_up_64 = self.up_tr64(self.out_up_128, self.skip_out64)
         # self.out = self.out_tr(self.out_up_64)
 
-        return self.out512, [self.out_up_256, self.out_up_128, self.out_up_64]
+        return self.out512, [self.out_up_256, self.out_up_128, self.out_up_64], self.out_up_64
 

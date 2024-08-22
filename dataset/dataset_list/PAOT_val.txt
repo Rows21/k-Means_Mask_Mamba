@@ -1,0 +1,1 @@
+08_AbdomenCT-1K/img/Case_00001_0000.nii.gz	08_AbdomenCT-1K/label/Case_00001.nii.gz

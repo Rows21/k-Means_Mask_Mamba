@@ -20,6 +20,7 @@ from monai.transforms import (
     RandCropByLabelClassesd,
 )
 
+import os
 import collections.abc
 import math
 import pickle
@@ -33,14 +34,14 @@ from copy import copy, deepcopy
 import h5py
 import glob
 
-
+import random
 import numpy as np
 import torch
 from typing import IO, TYPE_CHECKING, Any, Callable, Dict, Hashable, List, Mapping, Optional, Sequence, Tuple, Union
 
 sys.path.append("..") 
 from utils.utils import get_key
-
+from dataset.dataloader_tts import LoadImageh5d_totoalseg
 from torch.utils.data import Subset
 
 from monai.data import DataLoader, Dataset, list_data_collate, DistributedSampler, CacheDataset
@@ -54,9 +55,65 @@ from monai.data.image_reader import ImageReader
 from monai.utils.enums import PostFix
 DEFAULT_POST_FIX = PostFix.meta()
 
-class UniformDataset(Dataset):
-    def __init__(self, data, transform, datasetkey):
-        super().__init__(data=data, transform=transform)
+def txt_rand_split(train_dict: str, train_ratio: float):
+
+    with open(train_dict, 'r') as file:
+        lines = file.readlines()
+        total = len(lines)
+
+    random.shuffle(lines)
+
+    split_ratio = round(total * train_ratio)
+    train = lines[:split_ratio]
+    val = lines[split_ratio:]
+
+    with open('.'+train_dict.split('.')[-2]+'_train.txt', 'w') as file:
+        file.writelines(train)
+
+    with open('.'+train_dict.split('.')[-2]+'_val.txt', 'w') as file:
+        file.writelines(val)
+
+class KMData(Dataset):
+    def __init__(self, data: Sequence, 
+                 transform: Optional[Callable] = None,
+                 tts: bool = False,
+                 transform_tts: Optional[Callable] = None,) -> None:
+        self.data = data
+        self.transform = transform
+        self.tts = tts
+        if tts:
+            self.transform_tts = transform_tts
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def _transform(self, index: int):
+        data_i = self.data[index]
+        if int(data_i['name'][0:2]) != 15:
+            return apply_transform(self.transform, data_i) if self.transform is not None else data_i
+        else:
+            return apply_transform(self.transform_tts, data_i) if self.transform is not None else data_i
+
+    def __getitem__(self, index: Union[int, slice, Sequence[int]]):
+        if isinstance(index, slice):
+            # dataset[:42]
+            start, stop, step = index.indices(len(self))
+            indices = range(start, stop, step)
+            return Subset(dataset=self, indices=indices)
+        if isinstance(index, collections.abc.Sequence):
+            # dataset[[1, 3, 4]]
+            return Subset(dataset=self, indices=index)
+        return self._transform(index)
+
+class UniformDataset(KMData):
+    def __init__(self, data,
+                  transform,
+                  datasetkey,
+                  tts,
+                  transform_tts
+                  ):
+        
+        super().__init__(data=data, transform=transform, tts=tts, transform_tts=transform_tts)
         self.dataset_split(data, datasetkey)
         self.datasetkey = datasetkey
     
@@ -76,7 +133,10 @@ class UniformDataset(Dataset):
     
     def _transform(self, set_key, data_index):
         data_i = self.data_dic[set_key][data_index]
-        return apply_transform(self.transform, data_i) if self.transform is not None else data_i
+        if int(data_i['name'][0:2]) != 15:
+            return apply_transform(self.transform, data_i) if self.transform is not None else data_i
+        else:
+            return apply_transform(self.transform_tts, data_i) if self.transform is not None else data_i
     
     def __getitem__(self, index):
         ## the index generated outside is only used to select the dataset
@@ -89,10 +149,15 @@ class UniformDataset(Dataset):
 
 
 class UniformCacheDataset(CacheDataset):
-    def __init__(self, data, transform, cache_rate, datasetkey):
+    def __init__(self, data, transform, cache_rate, datasetkey, 
+                 tts: bool = False,
+                 transform_tts: Optional[Callable] = None,):
         super().__init__(data=data, transform=transform, cache_rate=cache_rate)
         self.datasetkey = datasetkey
         self.data_statis()
+        self.tts = tts
+        if tts:
+            self.transform_tts = transform_tts
     
     def data_statis(self):
         data_num_dic = {}
@@ -278,6 +343,60 @@ def get_loader(args):
             ToTensord(keys=["image", "label", "post_label"]),
         ]
     )
+    train_transforms_tts = Compose(
+        [
+            LoadImageh5d_totoalseg(keys=["image"], map_type='organs'), # 'cardiac', 'organs', 'vertebrae', 'muscles', 'ribs'
+            AddChanneld(keys=["image", "label"]),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(
+                keys=["image", "label"],
+                pixdim=(args.space_x, args.space_y, args.space_z),
+                mode=("bilinear", "nearest"),
+            ), # process h5 to here
+            ScaleIntensityRanged(
+                keys=["image"],
+                a_min=args.a_min,
+                a_max=args.a_max,
+                b_min=args.b_min,
+                b_max=args.b_max,
+                clip=True,
+            ),
+            CropForegroundd(keys=["image", "label", "post_label"], source_key="image"),
+            SpatialPadd(keys=["image", "label", "post_label"], spatial_size=(args.roi_x, args.roi_y, args.roi_z), mode='constant'),
+            RandZoomd_select(keys=["image", "label", "post_label"], prob=0.3, min_zoom=1.3, max_zoom=1.5, mode=['area', 'nearest', 'nearest']), # 7
+            RandCropByPosNegLabeld_select(
+                keys=["image", "label", "post_label"],
+                label_key="label",
+                spatial_size=(args.roi_x, args.roi_y, args.roi_z), #192, 192, 64
+                pos=2,
+                neg=1,
+                num_samples=args.num_samples,
+                image_key="image",
+                image_threshold=0,
+            ), # 8
+            RandCropByLabelClassesd_select(
+                keys=["image", "label", "post_label"],
+                label_key="label",
+                spatial_size=(args.roi_x, args.roi_y, args.roi_z), #192, 192, 64
+                ratios=[1, 1, 5],
+                num_classes=3,
+                num_samples=args.num_samples,
+                image_key="image",
+                image_threshold=0,
+            ), # 9
+            RandRotate90d(
+                keys=["image", "label", "post_label"],
+                prob=0.10,
+                max_k=3,
+            ),
+            RandShiftIntensityd(
+                keys=["image"],
+                offsets=0.10,
+                prob=0.20,
+            ),
+            ToTensord(keys=["image", "label", "post_label"]),
+        ]
+    )
 
     val_transforms = Compose(
         [
@@ -304,59 +423,41 @@ def get_loader(args):
         ]
     )
 
-    ## training dict part
-    train_img = []
-    train_lbl = []
-    train_post_lbl = []
-    train_name = []
-
-    for item in args.dataset_list:
-        for line in open(args.data_txt_path + item +'_train.txt'):
-            name = line.strip().split()[1].split('.')[0]
-            train_img.append(args.data_root_path + line.strip().split()[0])
-            train_lbl.append(args.data_root_path + line.strip().split()[1])
-            train_post_lbl.append(args.data_root_path + name.replace('label', 'post_label') + '.h5')
-            train_name.append(name)
-    data_dicts_train = [{'image': image, 'label': label, 'post_label': post_label, 'name': name}
-                for image, label, post_label, name in zip(train_img, train_lbl, train_post_lbl, train_name)]
-    print('train len {}'.format(len(data_dicts_train)))
-
-
-    ## validation dict part
-    val_img = []
-    val_lbl = []
-    val_post_lbl = []
-    val_name = []
-    for item in args.dataset_list:
-        for line in open(args.data_txt_path + item +'_val.txt'):
-            name = line.strip().split()[1].split('.')[0]
-            val_img.append(args.data_root_path + line.strip().split()[0])
-            val_lbl.append(args.data_root_path + line.strip().split()[1])
-            val_post_lbl.append(args.data_root_path + name.replace('label', 'post_label') + '.h5')
-            val_name.append(name)
-    data_dicts_val = [{'image': image, 'label': label, 'post_label': post_label, 'name': name}
-                for image, label, post_label, name in zip(val_img, val_lbl, val_post_lbl, val_name)]
-    print('val len {}'.format(len(data_dicts_val)))
-
-
-    ## test dict part
-    test_img = []
-    test_lbl = []
-    test_post_lbl = []
-    test_name = []
-    for item in args.dataset_list:
-        for line in open(args.data_txt_path + item +'_test.txt'):
-            name = line.strip().split()[1].split('.')[0]
-            test_img.append(args.data_root_path + line.strip().split()[0])
-            test_lbl.append(args.data_root_path + line.strip().split()[1])
-            test_post_lbl.append(args.data_root_path + name.replace('label', 'post_label') + '.h5')
-            test_name.append(name)
-    data_dicts_test = [{'image': image, 'label': label, 'post_label': post_label, 'name': name}
-                for image, label, post_label, name in zip(test_img, test_lbl, test_post_lbl, test_name)]
-    print('test len {}'.format(len(data_dicts_test)))
+    ## generate train val test dict
+    #for item in args.dataset_list:
+    #    txt_rand_split('./dataset/dataset_list/' + item + '.txt',0.9)
 
     if args.phase == 'train':
+        ## training dict part
+        train_img = []
+        train_lbl = []
+        train_post_lbl = []
+        train_name = []
+
+        for item in args.dataset_list:
+            if 'TTS' in item:
+                for line in open(args.data_txt_path + item +'_train.txt'):
+                    name = line.strip().split('\t')[0]
+                    train_img_path = os.path.join(args.data_root_path + '15_TTS', name, 'ct.nii.gz')
+                    train_lbl_path = os.path.join(args.data_root_path + '15_TTS', name, 'segmentations/')
+                    train_post_lbl.append(args.data_root_path + '15_TTS/post_label/' + name + '.h5')
+                    train_img.append(train_img_path)
+                    train_lbl.append(train_lbl_path)
+                    train_name.append('15_TTS/label/'+name)
+            else:
+                for line in open(args.data_txt_path + item +'_train.txt'):
+                    name = line.strip().split()[1].split('.')[0]
+                    train_img.append(args.data_root_path + line.strip().split()[0])
+                    train_lbl.append(args.data_root_path + line.strip().split()[1])
+                    train_post_lbl.append(args.data_root_path + name.replace('label', 'post_label') + '.h5')
+                    train_name.append(name)
+        data_dicts_train = [{'image': image, 'label': label, 'post_label': post_label, 'name': name}
+                for image, label, post_label, name in zip(train_img, train_lbl, train_post_lbl, train_name)]
+        print('train len {}'.format(len(data_dicts_train)))
+
         if args.cache_dataset:
+            if 'TTS' in args.dataset_list:
+                train_transforms = train_transforms_tts
             if args.uniform_sample:
                 train_dataset = UniformCacheDataset(data=data_dicts_train, transform=train_transforms, cache_rate=args.cache_rate, datasetkey=args.datasetkey)
             else:
@@ -365,7 +466,7 @@ def get_loader(args):
             if args.uniform_sample:
                 train_dataset = UniformDataset(data=data_dicts_train, transform=train_transforms, datasetkey=args.datasetkey)
             else:
-                train_dataset = Dataset(data=data_dicts_train, transform=train_transforms)
+                train_dataset = KMData(data=data_dicts_train, transform=train_transforms, tts=True, transform_tts=train_transforms_tts)
         train_sampler = DistributedSampler(dataset=train_dataset, even_divisible=True, shuffle=True) if args.dist else None
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.num_workers, 
                                     collate_fn=list_data_collate, sampler=train_sampler)
@@ -373,6 +474,31 @@ def get_loader(args):
     
     
     if args.phase == 'validation':
+        ## validation dict part
+        val_img = []
+        val_lbl = []
+        val_post_lbl = []
+        val_name = []
+        for item in args.dataset_list:
+            if 'TTS' in item:
+                for line in open(args.data_txt_path + item +'_train.txt'):
+                    name = line.strip().split('\t')[0]
+                    train_img_path = os.path.join(args.data_root_path + '15_TTS', name, 'ct.nii.gz')
+                    train_lbl_path = os.path.join(args.data_root_path + '15_TTS', name, 'segmentations/')
+                    train_post_lbl.append(args.data_root_path + '15_TTS/post_label/' + name + '.h5')
+                    train_img.append(train_img_path)
+                    train_lbl.append(train_lbl_path)
+                    train_name.append('15_TTS/label/'+name)
+            else:
+                for line in open(args.data_txt_path + item +'_val.txt'):
+                    name = line.strip().split()[1].split('.')[0]
+                    val_img.append(args.data_root_path + line.strip().split()[0])
+                    val_lbl.append(args.data_root_path + line.strip().split()[1])
+                    val_post_lbl.append(args.data_root_path + name.replace('label', 'post_label') + '.h5')
+                    val_name.append(name)
+        data_dicts_val = [{'image': image, 'label': label, 'post_label': post_label, 'name': name}
+                    for image, label, post_label, name in zip(val_img, val_lbl, val_post_lbl, val_name)]
+        print('val len {}'.format(len(data_dicts_val)))
         if args.cache_dataset:
             val_dataset = CacheDataset(data=data_dicts_val, transform=val_transforms, cache_rate=args.cache_rate)
         else:
@@ -382,6 +508,21 @@ def get_loader(args):
     
     
     if args.phase == 'test':
+        ## test dict part
+        test_img = []
+        test_lbl = []
+        test_post_lbl = []
+        test_name = []
+        for item in args.dataset_list:
+            for line in open(args.data_txt_path + item +'_test.txt'):
+                name = line.strip().split()[1].split('.')[0]
+                test_img.append(args.data_root_path + line.strip().split()[0])
+                test_lbl.append(args.data_root_path + line.strip().split()[1])
+                test_post_lbl.append(args.data_root_path + name.replace('label', 'post_label') + '.h5')
+                test_name.append(name)
+        data_dicts_test = [{'image': image, 'label': label, 'post_label': post_label, 'name': name}
+                    for image, label, post_label, name in zip(test_img, test_lbl, test_post_lbl, test_name)]
+        print('test len {}'.format(len(data_dicts_test)))
         if args.cache_dataset:
             test_dataset = CacheDataset(data=data_dicts_test, transform=val_transforms, cache_rate=args.cache_rate)
         else:
@@ -429,7 +570,7 @@ def get_loader_without_gt(args):
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4, collate_fn=list_data_collate)
     return test_loader, val_transforms
 
-
+    
 if __name__ == "__main__":
     train_loader, test_loader = partial_label_dataloader()
     for index, item in enumerate(test_loader):

@@ -32,9 +32,8 @@ from monai.utils import (
 from monai.data import decollate_batch
 from monai.transforms import Invertd, SaveImaged
 
-NUM_CLASS = 32
-
-
+NUM_CLASS = 45
+NUM_CLASS_ORGAN = 25
 
 TEMPLATE={
     '01': [1,2,3,4,5,6,7,8,9,10,11,12,13,14],
@@ -56,7 +55,8 @@ TEMPLATE={
     '10_08': [15, 29], # post process
     '10_09': [1],
     '10_10': [31],
-    '15': [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17] ## total segmentation
+    '15': [1,2,3,4,6,7,8,9,10,11,12,13,16,16,17,17,17], ## total segmentation
+    'ALL': [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,12,13,20,21,23,24,25,26,27,28,29,30,31]
 }
 
 ORGAN_NAME = ['Spleen', 'Right Kidney', 'Left Kidney', 'Gall Bladder', 'Esophagus', 
@@ -64,7 +64,10 @@ ORGAN_NAME = ['Spleen', 'Right Kidney', 'Left Kidney', 'Gall Bladder', 'Esophagu
                 'Pancreas', 'Right Adrenal Gland', 'Left Adrenal Gland', 'Duodenum', 'Hepatic Vessel',
                 'Right Lung', 'Left Lung', 'Colon', 'Intestine', 'Rectum', 
                 'Bladder', 'Prostate', 'Left Head of Femur', 'Right Head of Femur', 'Celiac Truck',
-                'Kidney Tumor', 'Liver Tumor', 'Pancreas Tumor', 'Hepatic Vessel Tumor', 'Lung Tumor', 'Colon Tumor', 'Kidney Cyst']
+                'Spleen Tumor', 'Kidney Tumor', 'Kidney Cyst', 'Gall Bladder Tumor', 'Esophagus Tumor', 
+                'Liver Tumor', 'Stomach Tumor', 'Aortic Tumor', 'Postcava Tumor Thrombus', 'Portal Vein Tumor Thrombus',
+                'Pancreas Tumor', 'Adrenal Tumor', 'Adrenal Cyst', 'Duodenal Tumor', 'Hepatic Vessel Tumor', 
+                'Lung Tumor', 'Lung Cyst', 'Colon Tumor', 'Small Intestinal Neoplasm', 'Rectal Tumor']
 
 ## mapping to original setting
 MERGE_MAPPING_v1 = {
@@ -701,6 +704,21 @@ def merge_label(pred_bmask, name):
         # predicted_prob = pred_sigmoid[b][organ_index]
     return merged_label_v1, merged_label_v2
 
+def get_template_key(B, name, TEMPLATE):
+    organ_list = []
+    for b in range(B):
+        dataset_index = int(name[b][0:2])
+        if dataset_index == 10:
+            template_key = name[b][0:2] + '_' + name[b][17:19]
+        elif dataset_index == 1:
+            if int(name[b][-2:]) >= 60:
+                template_key = '01_2'
+            else:
+                template_key = '01'
+        else:
+            template_key = name[b][0:2]
+        organ_list.append(TEMPLATE[template_key])
+    return organ_list
 
 def get_key(name):
     ## input: name
@@ -712,6 +730,27 @@ def get_key(name):
         template_key = name[0:2]
     return template_key
 
+def get_cls_outputs(logit, target, cls_list):
+    t_shape = list(target.shape)
+    cls_shape = list(logit.shape)
+    B = target.shape[0]
+    N = len(cls_list[0])
+    t_shape[1] = N
+    cls_shape[1] = N
+
+    targets = torch.zeros(t_shape)
+    pred_cls = torch.zeros(cls_shape)
+    pred_masks = torch.zeros(t_shape)
+
+    for b in range(B):
+        key_layers = [organ - 1 for organ in cls_list[b]]
+        targets[b] = target[b,key_layers,:,:,:]
+        pred_masks[b] = logit['pred_masks'][b,key_layers,:,:,:]
+        pred_cls[b] = logit['pred_logits'][b,key_layers,:]
+    
+    logit['pred_masks'] = pred_masks
+    logit['pred_logits'] = pred_cls
+    return logit, targets
 
 def dice_score(preds, labels, spe_sen=False):  # on GPU
     ### preds: w,h,d; label: w,h,d
