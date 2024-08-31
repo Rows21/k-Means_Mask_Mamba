@@ -1,6 +1,6 @@
 from typing import List
 import torch
-import numpy as np
+
 from torch import nn
 from torch.nn import functional as F
 from torch.cuda.amp import autocast
@@ -9,144 +9,10 @@ from timm.models.layers import DropPath
 from timm.models.layers import trunc_normal_tf_ as trunc_normal_
 from model.mambablock import MambaLayer
 import math
+from model.TextAttend import TextAttend
+from model.sdm import SDM
+from model.utils import ConvBN, get_norm
 
-def gumbel_softmax(logits: torch.Tensor, tau: float = 1, hard: bool = False, dim: int = -1) -> torch.Tensor:
-    # _gumbels = (-torch.empty_like(
-    #     logits,
-    #     memory_format=torch.legacy_contiguous_format).exponential_().log()
-    #             )  # ~Gumbel(0,1)
-    # more stable https://github.com/pytorch/pytorch/issues/41663
-    gumbel_dist = torch.distributions.gumbel.Gumbel(
-        torch.tensor(0., device=logits.device, dtype=logits.dtype),
-        torch.tensor(1., device=logits.device, dtype=logits.dtype))
-    gumbels = gumbel_dist.sample(logits.shape)
-
-    gumbels = (logits + gumbels) / tau  # ~Gumbel(logits,tau)
-    y_soft = gumbels.softmax(dim)
-
-    if hard:
-        # Straight through.
-        index = y_soft.max(dim, keepdim=True)[1]
-        y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
-        ret = y_hard - y_soft.detach() + y_soft
-    else:
-        # Reparametrization trick.
-        ret = y_soft
-    return ret
-
-def hard_softmax(logits: torch.Tensor, dim):
-    y_soft = logits.softmax(dim)
-    # Straight through.
-    index = y_soft.max(dim, keepdim=True)[1]
-    y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format).scatter_(dim, index, 1.0)
-    ret = y_hard - y_soft.detach() + y_soft
-
-    return ret
-
-class MyBatchNorm_4d(nn.modules.batchnorm._BatchNorm):
-    def __init__(self, num_features, eps=1e-5, momentum=0.1,
-                 affine=True, track_running_stats=True):
-        super(MyBatchNorm_4d, self).__init__(num_features, eps, momentum, affine, track_running_stats)
-    
-    def _check_input_dim(self, input):
-        if input.dim() != 6:
-            raise ValueError('expected 6D input (got {}D input)'
-                             .format(input.dim()))
-    def forward(self, input):
-        self._check_input_dim(input)
-
-        exponential_average_factor = 0.0
-
-        if self.training and self.track_running_stats:
-            if self.num_batches_tracked is not None:
-                self.num_batches_tracked += 1
-                if self.momentum is None:  # use cumulative moving average
-                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
-                else:  # use exponential moving average
-                    exponential_average_factor = self.momentum
-
-        # calculate running estimates
-        if self.training:
-            mean = input.mean([0, 2, 3, 4, 5])
-            # use biased var in train
-            var = input.var([0, 2, 3, 4, 5], unbiased=False)
-            n = input.numel() / input.size(1)
-            with torch.no_grad():
-                self.running_mean = exponential_average_factor * mean\
-                    + (1 - exponential_average_factor) * self.running_mean
-                # update running_var with unbiased var
-                self.running_var = exponential_average_factor * var * n / (n - 1)\
-                    + (1 - exponential_average_factor) * self.running_var
-        else:
-            mean = self.running_mean
-            var = self.running_var
-
-        input = (input - mean[None, :, None, None, None, None]) / (torch.sqrt(var[None, :, None, None, None, None] + self.eps))
-        if self.affine:
-            input = input * self.weight[None, :, None, None, None, None] + self.bias[None, :, None, None, None, None]
-
-        return input
-
-def get_activation(name):
-    if name is None or name.lower() == 'none':
-        return nn.Identity()
-    if name == 'relu':
-        return nn.ReLU()
-    elif name == 'gelu':
-        return nn.GELU()
-
-def get_norm(name, channels):
-    if name is None or name.lower() == 'none':
-        return nn.Identity()
-    
-    if name.lower() == '1d':
-        return nn.BatchNorm1d(channels, eps=1e-3, momentum=0.01)
-    
-    if name.lower() == '2d':
-        return nn.BatchNorm2d(channels, eps=1e-3, momentum=0.01)
-
-    if name.lower() == '3d':
-        return nn.BatchNorm3d(channels, eps=1e-3, momentum=0.01)
-    
-    if name.lower() == '4d':
-        return MyBatchNorm_4d(channels, eps=1e-3, momentum=0.01)
-        
-    if name.lower() == 'syncbn':
-        return nn.SyncBatchNorm(channels, eps=1e-3, momentum=0.01)
-
-class ConvBN(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, norm=None, act=None,
-                 conv_type='3d', conv_init='he_normal', norm_init=1.0):
-        super().__init__()
-        
-        if conv_type == '3d':
-            self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
-        elif conv_type == '2d':
-            self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
-        elif conv_type == '1d':
-            self.conv = nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
-
-        self.norm = get_norm(norm, out_channels)
-        self.act = get_activation(act)
-
-        if conv_init == 'normal':
-            nn.init.normal_(self.conv.weight, std=.02)
-        elif conv_init == 'trunc_normal':
-            trunc_normal_(self.conv.weight, std=.02)
-        elif conv_init == 'he_normal':
-            # https://www.tensorflow.org/api_docs/python/tf/keras/initializers/HeNormal
-            trunc_normal_(self.conv.weight, std=math.sqrt(2.0 / in_channels))
-        elif conv_init == 'xavier_uniform':
-            nn.init.xavier_uniform_(self.conv.weight)
-        if bias:
-            nn.init.zeros_(self.conv.bias)
-
-        if norm is not None:
-            nn.init.constant_(self.norm.weight, norm_init)
-
-    def forward(self, x):
-        return self.act(self.norm(self.conv(x)))
-    
 # https://github.com/google-research/deeplab2/blob/7a01a7165e97b3325ad7ea9b6bcc02d67fecd07a/model/decoder/max_deeplab.py#L60
 def add_bias_towards_void(query_class_logits, void_prior_prob=0.9):
     class_logits_shape = query_class_logits.shape
@@ -222,6 +88,7 @@ class AttentionOperation(nn.Module):
 class kMaXTransformerLayer(nn.Module):
     def __init__(
         self,
+        stage,
         num_classes=32,
         in_channel_pixel=2048,
         in_channel_query=256,
@@ -231,12 +98,11 @@ class kMaXTransformerLayer(nn.Module):
         key_expansion=1,
         value_expansion=2,
         drop_path_prob=0.0,
-        hard=True,
-        gumbel=False,
-        gumbel_tau=1.,
+        dims=96,
+        in_dims=48,
     ):
         super().__init__()
-
+        self.stage = stage
         self._num_classes = num_classes
         self._num_heads = num_heads
         self._bottleneck_channels = int(round(base_filters * bottleneck_expansion))
@@ -253,7 +119,9 @@ class kMaXTransformerLayer(nn.Module):
         self.drop_path_ffn = DropPath(drop_path_prob) if drop_path_prob > 0. else nn.Identity()
 
         initialization_std = self._bottleneck_channels ** -0.5
-        self._query_conv1_bn_act = nn.Linear(in_channel_query, self._bottleneck_channels)
+        self._query_conv1_bn_act = ConvBN(in_channel_query, self._bottleneck_channels, kernel_size=1, bias=False,
+                                          norm='1d', act='relu', conv_type='1d')
+        #nn.Linear(in_channel_query, self._bottleneck_channels)
         #nn.Conv1d(in_channels=in_channel_query, out_channels=self._bottleneck_channels, kernel_size=1, stride=1, padding=0, bias=False)
         #ConvBN(in_channel_query, self._bottleneck_channels, kernel_size=1, bias=False,
                                     #      norm='1d', act='relu', conv_type='1d')
@@ -261,7 +129,10 @@ class kMaXTransformerLayer(nn.Module):
         self._pixel_conv1_bn_act = ConvBN(in_channel_pixel, self._bottleneck_channels, kernel_size=1, bias=False,
                                           norm='3d', act='gelu')
 
-        self._query_qkv_conv_bn = nn.Linear(self._bottleneck_channels, self._total_key_depth * 2 + self._total_value_depth)
+        self._query_qkv_conv_bn = ConvBN(self._bottleneck_channels, self._total_key_depth * 2 + self._total_value_depth, kernel_size=1, bias=False,
+                                          norm='1d', act=None, conv_type='1d')
+        trunc_normal_(self._query_qkv_conv_bn.conv.weight, std=initialization_std)
+        #nn.Linear(self._bottleneck_channels, self._total_key_depth * 2 + self._total_value_depth)
         #ConvBN(self._bottleneck_channels, self._total_key_depth * 2 + self._total_value_depth, kernel_size=1, bias=False,
                                           #norm='1d', act=None, conv_type='1d')
         #trunc_normal_(self._query_qkv_conv_bn.conv.weight, std=initialization_std)
@@ -272,7 +143,9 @@ class kMaXTransformerLayer(nn.Module):
 
         self._query_self_attention = AttentionOperation(channels_v=self._total_value_depth, num_heads=num_heads)
 
-        self._query_conv3_bn = nn.Linear(self._total_value_depth, in_channel_query)
+        self._query_conv3_bn = ConvBN(self._total_value_depth, in_channel_query, kernel_size=1, bias=False,
+                                          norm='1d', act=None, conv_type='1d', norm_init=0.0)
+        #nn.Linear(self._total_value_depth, in_channel_query)
                                #ConvBN(self._total_value_depth, in_channel_query, kernel_size=1, bias=False,
                                #           norm='1d', act=None, conv_type='1d', norm_init=0.0)
 
@@ -284,42 +157,45 @@ class kMaXTransformerLayer(nn.Module):
         self._predcitor = kMaXPredictor(in_channel_pixel=self._bottleneck_channels,
             in_channel_query=self._bottleneck_channels, num_classes=num_classes)
         self._kmeans_query_batch_norm_retrieved_value = get_norm('1d', self._total_value_depth)
-        self._kmeans_query_conv3_bn = nn.Linear(self._total_value_depth, in_channel_query)
-        
-        # gumbel init
-        self.hard = hard
-        self.gumbel = gumbel
-        self.gumbel_tau = gumbel_tau
+        self._kmeans_query_conv3_bn = ConvBN(self._total_value_depth, in_channel_query, kernel_size=1, bias=False,
+                                          norm='1d', act=None, conv_type='1d', norm_init=0.0)
 
         # ssm block init
         self.mamba_layer = MambaLayer(input_dim=num_classes, output_dim=num_classes)
         
-    
-    def get_attn(self, attn, gumbel=None, hard=None):
+        # anomaly layer
+        self.up = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=True)
+        self.sdm = SDM(dims, in_dims)
+        self.diff = nn.Sequential(
+            ConvBN(in_dims + dims, dims, kernel_size=1, bias=False, norm='3d', act='relu'),
+            ConvBN(dims, dims, kernel_size=1, bias=False, norm='3d', act='relu'),  
+            )
+        
+        self.anomal_attn = TextAttend(dim=dims, 
+                    out_dim=in_channel_query, 
+                    num_heads=8, 
+                    norm_layer=nn.LayerNorm, 
+                    in_features=in_dims, 
+                    mlp_ratio=4, 
+                    hard=True, 
+                    gumbel=True, 
+                    sum_assign=False, 
+                    assign_eps=1., 
+                    gumbel_tau=1.)
+        
+    def anomaly_score(self, anomaly):
+        anomaly_mask = anomaly > 0.5
+        anomaly[anomaly_mask] = anomaly[anomaly_mask] * 0.2
+        anomaly[~anomaly_mask] = -1.0 # anomaly[~anomaly_mask] * 0.0
+        anomaly = anomaly.unsqueeze(1).repeat(1, self._num_classes, 1, 1, 1)
+        return anomaly
 
-        if gumbel is None:
-            gumbel = self.gumbel
-
-        if hard is None:
-            hard = self.hard
-
-        attn_dim = -2
-        if gumbel and self.training:
-            attn = gumbel_softmax(attn, dim=attn_dim, hard=hard, tau=self.gumbel_tau)
-        else:
-            if hard:
-                attn = hard_softmax(attn, dim=attn_dim)
-            else:
-                attn = F.softmax(attn, dim=attn_dim)
-
-        return attn
-
-    def forward(self, pixel_feature, query_feature):
+    def forward(self, d_feat, pixel_feature, query_feature):
         B, C, H, W, D = pixel_feature.shape
         B, Z, L = query_feature.shape
         
         pixel_space = self._pixel_conv1_bn_act(F.gelu(pixel_feature)) # B C HWD
-        query_space = self._query_conv1_bn_act(query_feature.transpose(1,2)).transpose(1,2) # B x C x L
+        query_space = self._query_conv1_bn_act(query_feature) # B x C x L #.transpose(1,2)
 
         # k-means cross-attention.
         pixel_value = self._pixel_v_conv_bn(pixel_space) # B C HWD
@@ -335,30 +211,34 @@ class kMaXTransformerLayer(nn.Module):
             anomaly_score_normalized = (anomaly_score - score_min)/(score_max - score_min)
             #mask_logits = mask_logits.permute(0,2,1)
             clustering_result = self.mamba_layer(clustering_result)# + mask_logits # norm_f
+            index = clustering_result.max(1, keepdim=True)[1]
+            clustering_result = torch.zeros_like(clustering_result, memory_format=torch.legacy_contiguous_format).scatter_(1, index, 1.0)
+            anomaly = self.anomaly_score(anomaly_score_normalized)
             
-            if self.gumbel:
-                clustering_result = self.get_attn(clustering_result)
-            else:
-                index = clustering_result.max(1, keepdim=True)[1]
-                clustering_result = torch.zeros_like(clustering_result, memory_format=torch.legacy_contiguous_format).scatter_(1, index, 1.0)
-
         with autocast(enabled=False):
         # k-means update.
             kmeans_update = torch.einsum('blm,bdm->bdl', clustering_result.float(), pixel_value.float()) # N x C x L
 
         kmeans_update = self._kmeans_query_batch_norm_retrieved_value(kmeans_update)
-        kmeans_update = self._kmeans_query_conv3_bn(kmeans_update.transpose(1,2)).transpose(1,2)
+        kmeans_update = self._kmeans_query_conv3_bn(kmeans_update) # .transpose(1,2)
         query_feature = query_feature + self.drop_path_kmeans(kmeans_update)
 
+        # anomaly 
+        if self.stage == 'II':
+            d_feat = self.up(d_feat)
+            feat = self.sdm(pixel_feature, d_feat)
+            d_feat = self.diff(torch.cat((d_feat, feat), 1))
+            query_feature, _ = self.anomal_attn(feat, query_feature.transpose(1,2), anomaly)
+        
         # query self-attention.
-        query_qkv = self._query_qkv_conv_bn(query_space.transpose(1,2)).transpose(1,2)
+        query_qkv = self._query_qkv_conv_bn(query_space) #.transpose(1,2)
         query_q, query_k, query_v = torch.split(query_qkv,
          [self._total_key_depth, self._total_key_depth, self._total_value_depth], dim=1)
         query_q = query_q.reshape(B, self._num_heads, self._total_key_depth//self._num_heads, L)
         query_k = query_k.reshape(B, self._num_heads, self._total_key_depth//self._num_heads, L)
         query_v = query_v.reshape(B, self._num_heads, self._total_value_depth//self._num_heads, L)
         self_attn_update = self._query_self_attention(query_q, query_k, query_v)
-        self_attn_update = self._query_conv3_bn(self_attn_update.transpose(1,2)).transpose(1,2)
+        self_attn_update = self._query_conv3_bn(self_attn_update)#.transpose(1,2)
 
         query_feature = query_feature + self.drop_path_attn(self_attn_update)
         query_feature = F.gelu(query_feature)
@@ -369,4 +249,4 @@ class kMaXTransformerLayer(nn.Module):
         query_feature = query_feature + self.drop_path_ffn(ffn_update)
         query_feature = F.gelu(query_feature)
 
-        return query_feature, anomaly_score_normalized
+        return query_feature, d_feat

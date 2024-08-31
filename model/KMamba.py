@@ -167,7 +167,7 @@ class KMamba(nn.Module):
             raise Exception('{} backbone is not implemented in curretn version'.format(backbone))
 
         self.encoding = encoding
-
+        self.up = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=True)
         if self.stage == 'I':
             self.organ_embedding = nn.Embedding(out_channels, 512)
         elif self.stage == 'II':
@@ -182,8 +182,8 @@ class KMamba(nn.Module):
         self._cluster_centers = nn.Embedding(cls_channel, out_channels)
         
         trunc_normal_(self._cluster_centers.weight, std=1.0)
-        self._class_embedding_projection = nn.Linear(cls_channel, 256)#ConvBN(cls_channel, 256, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
-        self._mask_embedding_projection = nn.Linear(cls_channel, 256)#ConvBN(cls_channel, 256, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
+        self._class_embedding_projection = ConvBN(cls_channel, 256, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
+        self._mask_embedding_projection = ConvBN(cls_channel, 256, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
         self._diff_embedding_projection = ConvBN(cls_channel, projection, kernel_size=1, bias=False, norm='1d', act='gelu', conv_type='1d')
         self._predcitor = kMaXPredictor(in_channel_pixel=pixel_out,in_channel_query=256, num_classes=cls_organ)
 
@@ -191,8 +191,9 @@ class KMamba(nn.Module):
         self._kmax_transformer_layers = nn.ModuleList()
         for index, output_stride in enumerate(self.kmax_channel):
             for _ in range(1):
-                print(output_stride)
+                #print(output_stride)
                 self._kmax_transformer_layers.append(kMaXTransformerLayer(
+                    stage=stage,
                     num_classes=out_channels,
                     in_channel_pixel=output_stride,
                     in_channel_query=cls_channel,
@@ -201,43 +202,14 @@ class KMamba(nn.Module):
                     bottleneck_expansion=2,
                     key_expansion=1,
                     value_expansion=2,
-                    gumbel=gumbel
+                    dims=dims[index],
+                    in_dims=in_dims[index]
                     #drop_path_prob=drop_path_prob
                     )
                 )
         
         # tumor transformer
         #change for text embedding, full text for 768
-        self.up = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=True)
-        TextAttendLayers = []
-        SDMLayers = []
-        DDecoders = []
-        for i in range(len(self.kmax_channel)):
-            slayer = SDM(dims[i], in_dims[i])
-            dlayer = nn.Sequential(
-                ConvBN(in_dims[i] + dims[i], dims[i], kernel_size=1, bias=False, norm='3d', act='relu'),
-                ConvBN(dims[i], dims[i], kernel_size=1, bias=False, norm='3d', act='relu'),
-                
-            )
-            layer = TextAttend(dim=dims[i], 
-                    out_dim=cls_channel, 
-                    num_heads=8, 
-                    norm_layer=nn.LayerNorm, 
-                    in_features=in_dims[i], 
-                    mlp_ratio=4, 
-                    hard=True, 
-                    gumbel=True, 
-                    sum_assign=False, 
-                    assign_eps=1., 
-                    gumbel_tau=1.)
-            SDMLayers.append(slayer)
-            DDecoders.append(dlayer)
-            TextAttendLayers.append(layer)
-            
-        self.sdm_layers = nn.ModuleList(SDMLayers)
-        self.ddecoder_layers = nn.ModuleList(DDecoders)
-        self.text_attend_layers = nn.ModuleList(TextAttendLayers)
-
         self._projection = nn.Sequential(
             ConvBN(projection, projection, kernel_size=5, groups=projection, padding=2, bias=False,
                                                    norm='3d', act='gelu', conv_init='xavier_uniform'),
@@ -283,28 +255,6 @@ class KMamba(nn.Module):
         for i in range(N):
             task_encoding[i, task_id[i]]=1
         return task_encoding.cuda()
-
-    def heads_forward(self, features, weights, biases, num_insts):
-        assert features.dim() == 5
-        n_layers = len(weights)
-        x = features
-        for i, (w, b) in enumerate(zip(weights, biases)):
-            # print(i, x.shape, w.shape)
-            x = F.conv3d(
-                x, w, bias=b,
-                stride=1, padding=0,
-                groups=num_insts
-            )
-            if i < n_layers - 1:
-                x = F.relu(x)
-        return x
-    
-    def anomaly_score(self, anomaly):
-        anomaly_mask = anomaly > 0.5
-        anomaly[anomaly_mask] = anomaly[anomaly_mask] * 0.2
-        anomaly[~anomaly_mask] = -1.0 # anomaly[~anomaly_mask] * 0.0
-        anomaly = anomaly.unsqueeze(1).repeat(1, self.out_channels, 1, 1, 1)
-        return anomaly
     
     def forward(self, x_in):
         dec4, feats, out = self.backbone(x_in)
@@ -312,7 +262,6 @@ class KMamba(nn.Module):
         N = self.out_channels
         # task_encoding torch.Size([31, 256, 1, 1, 1])
         cluster_centers = self._cluster_centers.weight.unsqueeze(0).repeat(B, 1, 1) # B x C x L
-        anomaly_maps = []
         
         if self.stage == 'I': # =====STAGE II: TEXT -> IMAGE BRANCH
             task_encoding = self.organ_embedding.weight
@@ -323,36 +272,25 @@ class KMamba(nn.Module):
         # =====STAGE I: KMAX TRANSFORMER
         # dual-path transformer
         current_transformer_idx = 0 
+        d_feat = dec4
         for i, feat in enumerate(feats): # multi_scale_features = [dec3, dec2, dec1]
             for _ in range(1):
-                cluster_centers, anomaly = self._kmax_transformer_layers[current_transformer_idx](
-                        pixel_feature=feat, query_feature=cluster_centers
+                cluster_centers, d_feat = self._kmax_transformer_layers[current_transformer_idx](
+                        d_feat, pixel_feature=feat, query_feature=cluster_centers
                     )
                 current_transformer_idx += 1
-            anomaly = self.anomaly_score(anomaly)
-            anomaly_maps.append(anomaly)
 
-        class_embeddings = self._class_embedding_projection(cluster_centers.transpose(1,2)).transpose(1,2)
-        mask_embeddings = self._mask_embedding_projection(cluster_centers.transpose(1,2)).transpose(1,2)
+        class_embeddings = self._class_embedding_projection(cluster_centers)#.transpose(1,2)
+        mask_embeddings = self._mask_embedding_projection(cluster_centers)#.transpose(1,2)
         if self.stage == 'I':
-            _, logits = self._predcitor(
+            _, logits_out = self._predcitor(
                 class_embeddings=class_embeddings,
                 mask_embeddings=mask_embeddings,
                 pixel_feature=out,
             )
-            logits_out = self.softmax(logits)
+            #logits_out = self.softmax(logits)
         # =====STAGE II: Diffusion Guided            
         elif self.stage == 'II':
-            cluster_centers = cluster_centers.transpose(1, 2)
-            d_feat = dec4
-            
-            for i in range(len(self.text_attend_layers)):
-
-                d_feat = self.up(d_feat)
-                feats[i] = self.sdm_layers[i](feats[i], d_feat)
-                d_feat = self.ddecoder_layers[i](torch.cat((d_feat, feats[i]), 1))
-                cluster_centers, _ = self.text_attend_layers[i](feats[i], cluster_centers, anomaly_maps[i])
-
             if self.backbone_name == 'swinunetr':
                 d_feat = self.up(d_feat)
                 out = self.post_slayer(out, d_feat)
@@ -360,8 +298,8 @@ class KMamba(nn.Module):
 
             d_feat = self._projection(d_feat)
             out = F.normalize(d_feat, p=2, dim=1)
-            log_scale = self.get_sim_logits(task_encoding, self.normalize_feature(cluster_centers))
-            cluster_centers = cluster_centers.transpose(1, 2)
+            log_scale = self.get_sim_logits(task_encoding, self.normalize_feature(cluster_centers.transpose(1, 2)))
+            
             #cluster_centers[torch.arange(cluster_centers.shape[1]), sim_logits.argmax(dim=-1)]
             
             class_embeddings = self._diff_embedding_projection(cluster_centers)
@@ -370,6 +308,6 @@ class KMamba(nn.Module):
             logits = torch.einsum('bln,bn->bln', logits, log_scale)
         
             logits_out = logits.transpose(1, 2).reshape(B, N, H, W, D)
-            logits_out = self.softmax(logits_out)
+            #logits_out = self.softmax(logits_out)
         
         return logits_out

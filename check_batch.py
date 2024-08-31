@@ -41,28 +41,12 @@ def train(args, train_loader, model, optimizer, loss_seg_DICE, loss_seg_CE):
     )
     for step, batch in enumerate(epoch_iterator):
         x, y, name = batch["image"].to(args.device), batch["post_label"].float().to(args.device), batch['name']
-        if y.shape[1] != NUM_CLASS:
-            new_values = torch.full((args.batch_size, NUM_CLASS-y.shape[1], args.roi_x, args.roi_y, args.roi_z), 255).to(args.device)
-            print('new_values:', new_values.shape,'y:', y.shape)
-            y = torch.cat((y, new_values), dim=1)
-        logit_map = model(x)#, noise_masks, t
-        term_seg_Dice = loss_seg_DICE.forward(logit_map, y, name, TEMPLATE)
-        term_seg_BCE = loss_seg_CE.forward(logit_map, y, name, TEMPLATE)
-        #logit_map, y = get_cls_outputs(logit_map, y, cls_list)
-        loss = term_seg_BCE + term_seg_Dice
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+
         epoch_iterator.set_description(
-            "Epoch=%d: Training (%d / %d Steps) (dice_loss=%2.5f, bce_loss=%2.5f)" % (
-                args.epoch, step, len(train_loader), term_seg_Dice.item(), term_seg_BCE.item())
-        )
-        loss_bce_ave += term_seg_BCE.item()
-        loss_dice_ave += term_seg_Dice.item()
-        torch.cuda.empty_cache()
-    print('Epoch=%d: ave_dice_loss=%2.5f, ave_bce_loss=%2.5f' % (args.epoch, loss_dice_ave/len(epoch_iterator), loss_bce_ave/len(epoch_iterator)))
-    
-    return loss_dice_ave/len(epoch_iterator), loss_bce_ave/len(epoch_iterator)
+                "Epoch=%d: Training (%d / %d Steps) (dice_loss=%2.5f, bce_loss=%2.5f)" % (
+                    args.epoch, step, len(train_loader), x.shape, y.shape)
+            )
+    return name
 
 def validation(model, ValLoader, args):
     model.eval()
@@ -72,6 +56,7 @@ def validation(model, ValLoader, args):
     for index, batch in enumerate(tqdm(ValLoader)):
         # print('%d processd' % (index))
         image, label, name = batch["image"].cuda(), batch["post_label"], batch["name"]
+        
         print(name, image.shape)
         with torch.no_grad():
             pred = sliding_window_inference(image, (args.roi_x, args.roi_y, args.roi_z), 1, model)
@@ -121,12 +106,12 @@ def process(args):
         if not dist.is_initialized():
             dist.init_process_group(backend="nccl", init_method="env://")
             
-    # 0. set up distributed device
-    #args.rank = int(os.environ["RANK"])
-    args.local_rank = int(os.environ["LOCAL_RANK"])
-    print('local_rank:',args.local_rank)
-    torch.cuda.set_device(args.local_rank) # args.rank % torch.cuda.device_count()
-    args.device = torch.device("cuda", args.local_rank)
+        # 0. set up distributed device
+        #args.rank = int(os.environ["RANK"])
+        args.local_rank = int(os.environ["LOCAL_RANK"])
+        print('local_rank:',args.local_rank)
+        torch.cuda.set_device(args.local_rank) # args.rank % torch.cuda.device_count()
+        args.device = torch.device("cuda", args.local_rank)
     
     # prepare the 3D model
     if args.network == 'KMMM':
@@ -245,7 +230,7 @@ def main():
     parser.add_argument('--word_embedding', default='./pretrained_weights/', 
                         help='The path of word embedding')
     ## hyperparameter
-    parser.add_argument('--max_epoch', default=1000, type=int, help='Number of training epoches')
+    parser.add_argument('--max_epoch', default=1, type=int, help='Number of training epoches')
     parser.add_argument('--store_num', default=10, type=int, help='Store model how often')
     parser.add_argument('--warmup_epoch', default=100, type=int, help='number of warmup epochs')
     parser.add_argument('--lr', default=1e-4, type=float, help='Learning rate')
@@ -260,7 +245,7 @@ def main():
     ### PAOT_10: original division
     parser.add_argument('--data_root_path', default='/mnt/datasets/demo/', help='data root path')
     parser.add_argument('--data_txt_path', default='./dataset/dataset_list/', help='data txt path')
-    parser.add_argument('--batch_size', default=2, help='batch size')
+    parser.add_argument('--batch_size', default=1, help='batch size')
     parser.add_argument('--num_workers', default=0, type=int, help='workers numebr for DataLoader')
     parser.add_argument('--a_min', default=-175, type=float, help='a_min in ScaleIntensityRanged')
     parser.add_argument('--a_max', default=250, type=float, help='a_max in ScaleIntensityRanged')

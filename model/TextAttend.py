@@ -6,8 +6,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
-from .transformer_decoder import ConvBN
-
+from model.utils import ConvBN
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
@@ -376,7 +375,7 @@ class TextAttend(nn.Module):
 
         task_out = self.reduction(task_out) + self.mlp_channels(self.norm_new_x(task_out))
 
-        return task_out, attn_dict
+        return task_out.transpose(1,2), attn_dict
     
 
 

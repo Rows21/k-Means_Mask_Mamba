@@ -1,6 +1,5 @@
 from monai.transforms import (
     AsDiscrete,
-    AddChanneld,
     Compose,
     CropForegroundd,
     LoadImaged,
@@ -17,7 +16,7 @@ from monai.transforms import (
     SpatialPadd,
     apply_transform,
 )
-
+from monai.transforms import EnsureChannelFirstd as AddChanneld
 import nibabel as nib
 import collections.abc
 import math
@@ -51,13 +50,13 @@ from monai.config.type_definitions import NdarrayOrTensor
 
 from utils.utils import get_key
 
-ORGAN_DATASET_DIR = '/scratch/rw2867/datasets/'
-ORGAN_LIST = ['PAOT1']
+ORGAN_DATASET_DIR = 'H:/Datasets/'
+ORGAN_LIST = ['TTS_train']
 NUM_WORKER = 1
-NUM_CLASS = 45
-#TRANSFER_LIST = ['10_08']
+NUM_CLASS = 32
+TRANSFER_LIST = ['09']
 ## full list
-TRANSFER_LIST = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10_03', '10_06', '10_07', '10_08', '10_09', '10_10', '12', '13', '14', '15']
+#TRANSFER_LIST = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10_03', '10_06', '10_07', '10_08', '10_09', '10_10', '12', '13', '14', '15']
 
 TEMPLATE={
     '01': [1,2,3,4,5,6,7,8,9,10,11,12,13,14],
@@ -272,9 +271,9 @@ def generate_label(input_lbl, num_classes, name, TEMPLATE, raw_lbl):
 label_process = Compose(
     [
         LoadImaged(keys=["image", "label", "label_raw"]),
-        AddChanneld(keys=["image", "label", "label_raw"]),
+        AddChanneld(keys=["image", "label", "label_raw"], channel_dim="no_channel"),
         Orientationd(keys=["image", "label", "label_raw"], axcodes="RAS"),
-        ToTemplatelabeld(keys=['label']),
+        #ToTemplatelabeld(keys=['label']),
         RL_Splitd(keys=['label']),
         Spacingd(
             keys=["image", "label", "label_raw"], 
@@ -288,7 +287,7 @@ label_process_tts = Compose(
             LoadImaged_totoalseg(keys=["image"], map_type='organs'), # 'cardiac', 'organs', 'vertebrae', 'muscles', 'ribs'
             AddChanneld(keys=["image", "label", "label_raw"]),
             Orientationd(keys=["image", "label", "label_raw"], axcodes="RAS"),
-            ToTemplatelabeld(keys=['label']),
+            #ToTemplatelabeld(keys=['label']),
             RL_Splitd(keys=['label']),
             Spacingd(
                 keys=["image", "label", "label_raw"], 
@@ -296,43 +295,51 @@ label_process_tts = Compose(
                 mode=("bilinear", "nearest", "nearest"),),
         ]
     )
+if __name__ == '__main__':
+        
+    lab_path = "E:\\MatPoolDown\\post_label\\"
+    lab = [file for file in os.listdir(lab_path) if file.endswith(".h5")]
+    
+    train_img = []
+    train_lbl = []
+    train_name = []
+    train_ind = []
+    
+    null_y = []
+    for item in ORGAN_LIST:
+        dir = './dataset/dataset_list/' + item + '.txt'
+        if 'TTS' in item:
+            for line in open(dir):
+                name = line.strip().split('\t')[0]
+                if name+'.h5' not in lab:
+                    null_y.append(name)
+                train_img_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS', name, 'ct.nii.gz')
+                train_lbl_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS', name, 'segmentations/')
+                train_img.append(train_img_path)
+                train_lbl.append(train_lbl_path)
+                train_name.append('15_TTS/label/'+name)
+        else:
+            for line in open(dir):
+                train_img.append(ORGAN_DATASET_DIR + line.strip().split()[0])
+                train_lbl.append(ORGAN_DATASET_DIR + line.strip().split()[1])
+                train_name.append(line.strip().split()[1].split('.')[0])
+    data_dicts_train = [{'image': image, 'label': label, 'label_raw': label, 'name': name}
+                for image, label, name in zip(train_img, train_lbl, train_name)]
+    print('train len {}'.format(len(data_dicts_train)))
+            
 
-train_img = []
-train_lbl = []
-train_name = []
-train_ind = []
-for item in ORGAN_LIST:
-    dir = './dataset/dataset_list/' + item + '.txt'
-    if 'TTS' in item:
-        for line in open(dir):
-            name = line.strip().split('\t')[0]
-            train_img_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS', name, 'ct.nii.gz')
-            train_lbl_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS', name, 'segmentations/')
-            train_img.append(train_img_path)
-            train_lbl.append(train_lbl_path)
-            train_name.append('15_TTS/label/'+name)
-    else:
-        for line in open(dir):
-            train_img.append(ORGAN_DATASET_DIR + line.strip().split()[0])
-            train_lbl.append(ORGAN_DATASET_DIR + line.strip().split()[1])
-            train_name.append(line.strip().split()[1].split('.')[0])
-data_dicts_train = [{'image': image, 'label': label, 'label_raw': label, 'name': name}
-            for image, label, name in zip(train_img, train_lbl, train_name)]
-print('train len {}'.format(len(data_dicts_train)))
+    train_dataset = KMData(data=data_dicts_train, transform=label_process, tts=True, transform_tts=label_process_tts)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=NUM_WORKER, 
+                                collate_fn=list_data_collate)
 
-
-train_dataset = KMData(data=data_dicts_train, transform=label_process, tts=True, transform_tts=label_process_tts)
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=NUM_WORKER, 
-                            collate_fn=list_data_collate)
-
-for index, batch in tqdm(enumerate(train_loader)):
-    x, y, y_raw, name = batch["image"].to('cuda'), batch["label"].to('cuda'), batch['label_raw'].to('cuda'), batch['name']
-    y = generate_label(y, NUM_CLASS, name, TEMPLATE, y_raw)
-    name = batch['name'][0].replace('label', 'post_label')
-    post_dir = ORGAN_DATASET_DIR + '/'.join(name.split('/')[:-1])
-    store_y = y.numpy().astype(np.uint8)
-    if not os.path.exists(post_dir):
-        os.makedirs(post_dir)
-    with h5py.File(post_dir + '/' +name.split('/')[-1] + '.h5', 'w') as f:
-        f.create_dataset('post_label', data=store_y, compression='gzip', compression_opts=9)
-        f.close()
+    for index, batch in tqdm(enumerate(train_loader)):
+        x, y, y_raw, name = batch["image"].to('cuda'), batch["label"].to('cuda'), batch['label_raw'].to('cuda'), batch['name']
+        y = generate_label(y, NUM_CLASS, name, TEMPLATE, y_raw)
+        name = batch['name'][0].replace('label', 'post_label')
+        post_dir = ORGAN_DATASET_DIR + '/'.join(name.split('/')[:-1])
+        store_y = y.numpy().astype(np.uint8)
+        if not os.path.exists(post_dir):
+            os.makedirs(post_dir)
+        with h5py.File(post_dir + '/' +name.split('/')[-1] + '.h5', 'w') as f:
+            f.create_dataset('post_label', data=store_y, compression='gzip', compression_opts=9)
+            f.close()

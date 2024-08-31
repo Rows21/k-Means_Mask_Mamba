@@ -1,6 +1,6 @@
 from monai.transforms import (
     AsDiscrete,
-    AddChanneld,
+    #AddChanneld,
     Compose,
     CropForegroundd,
     LoadImaged,
@@ -19,7 +19,7 @@ from monai.transforms import (
     RandZoomd,
     RandCropByLabelClassesd,
 )
-
+from monai.transforms import EnsureChannelFirstd as AddChanneld
 import os
 import collections.abc
 import math

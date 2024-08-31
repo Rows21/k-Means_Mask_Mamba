@@ -50,9 +50,9 @@ from monai.config.type_definitions import NdarrayOrTensor
 
 from utils.utils import get_key
 
-ORGAN_DATASET_DIR = './dataset/demo/'
-ORGAN_LIST = './dataset/dataset_list/full.txt'
-NUM_WORKER = 1
+ORGAN_DATASET_DIR = '/mnt/datasets/demo/'
+ORGAN_LIST = './dataset/dataset_list/TTS.txt'
+NUM_WORKER = 0
 NUM_CLASS = 32
 ## full list
 # TRANSFER_LIST = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10_03', '10_06', '10_07', '10_08', '10_09', '10_10', '12', '13', '14']
@@ -75,7 +75,8 @@ TEMPLATE={
     '10_08': [15, 29],  # post process
     '10_09': [1],
     '10_10': [31],
-    '15': [1,2,3,4,6,7,8,0,10,11,12,13,16,16,17,17,17]
+    '15': [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17],
+    '15_2': [1,2,3,4,6,7,8,0,10,11,12,13,16,16,17,17,17]
 }
 
 POST_TUMOR_DICT = {
@@ -295,8 +296,8 @@ for line in open(ORGAN_LIST):
     #key = get_key(line.strip().split()[0])
     #if key in TRANSFER_LIST:
         name = line.strip().split('\t')[0]
-        train_img_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS/img', name[-4:] + 'ct.nii.gz')
-        train_lbl_path = os.path.join(ORGAN_DATASET_DIR + 'TTS', name, 'segmentations/')
+        train_img_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS', name, 'ct.nii.gz')
+        train_lbl_path = os.path.join(ORGAN_DATASET_DIR + '15_TTS', name, 'segmentations/')
         train_img.append(train_img_path)
         train_lbl.append(train_lbl_path)
         train_name.append(name)
@@ -310,22 +311,48 @@ train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_worker
 epoch_iterator = tqdm(
         train_loader, desc="Training (X / X Steps) (loss=X.X)", dynamic_ncols=True
     )
+null_y = []
 for index, batch in enumerate(epoch_iterator):
     x, y, filename = batch["image"], batch["label"], batch['name']
     name = ['15_TTS']
-    #y = generate_label(y, NUM_CLASS, name, TEMPLATE)
-    name = batch['name'][0].replace('label', 'post_label')
-    if not ((torch.unique(y) != 0).all()).item():
-        post_dir = ORGAN_DATASET_DIR + '15_TTS/label_trans/'
-        post_img_dir = ORGAN_DATASET_DIR + '15_TTS/img/'
-        store_y = y.numpy().astype(np.uint8)
-        if not os.path.exists(post_dir):
-            os.makedirs(post_dir)
-        if not os.path.exists(post_img_dir):
-            os.makedirs(post_img_dir)
-
-        # save label file
-        label = y[0,0,:,:,:].numpy()
-        lab_nii = nib.Nifti1Image(label, affine=np.eye(4))
-        nib.save(lab_nii, post_dir + name[-4:] + 'label.nii.gz')
+    if y.unique()[-1] == 0.0:
+        null_y.append(filename[0])
+        continue
     
+    y = generate_label(y, NUM_CLASS, name, TEMPLATE)
+    name = batch['name'][0].replace('label', 'post_label')
+
+    post_dir = ORGAN_DATASET_DIR + '15_TTS/post_label/'
+    post_img_dir = ORGAN_DATASET_DIR + '15_TTS/img/'
+    
+    if not os.path.exists(post_dir):
+        os.makedirs(post_dir)
+    if not os.path.exists(post_img_dir):
+        os.makedirs(post_img_dir)
+
+    # save label file
+    label = torch.zeros_like(y)
+    label.fill_(255)
+    label[0,0] = y[0,0]
+    label[0,1] = y[0,1]
+    label[0,2] = y[0,2]
+    label[0,3] = y[0,3]
+    label[0,5] = y[0,4]
+    label[0,6] = y[0,5]
+    label[0,7] = y[0,6]
+    label[0,9] = y[0,8]
+    label[0,10] = y[0,9]
+    label[0,11] = y[0,10]
+    label[0,12] = y[0,11]
+    label[0,15] = y[0,14] + y[0,15] + y[0,16]
+    label[0,16] = y[0,12] + y[0,13]
+        
+    # save
+    #lab_nii = nib.Nifti1Image(label, affine=np.eye(4))
+    #nib.save(lab_nii, post_dir + name[-4:] + 'label.nii.gz')
+    store_y = label.numpy().astype(np.uint8)
+    with h5py.File(ORGAN_DATASET_DIR + '15_TTS/post_label/' + name + '.h5', 'w') as f:
+        f.create_dataset('post_label', data=store_y, compression='gzip', compression_opts=9)
+        f.close()
+
+print(null_y)

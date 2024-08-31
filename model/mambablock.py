@@ -4,8 +4,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from mamba_ssm import Mamba
+#from mamba_ssm import Mamba
+from model.mamba_ssm import Mamba
 
 class MambaLayer(nn.Module):
     def __init__(self, input_dim, output_dim, d_state = 16, d_conv = 4, expand = 2):
