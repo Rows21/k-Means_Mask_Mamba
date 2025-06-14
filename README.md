@@ -9,16 +9,6 @@ New York University \
 
 ---
 
-<p align="center">
-<img src="screenshots/Figure_1.png" width=100% height=40% 
-class="center">
-</p>
-
-<p align="center">
-<img src="screenshots/Figure_2.png" width=100% height=40% 
-class="center">
-</p>
-
 We propose **DSM**.
 
  ## Installation
