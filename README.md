@@ -1,8 +1,6 @@
-### [Unleashing Diffusion and State Space Models for Medical Image Segmentation]()
+Official Pytorch implementation of DSM, proposed in the following paper:
 
-Official Pytorch implementation of DSM, from the following paper:
-
-[Unleashing Diffusion and State Space Models for Medical Image Segmentation](https://www.arxiv.org/abs/2506.12747).  \
+[Unleashing Diffusion and State Space Models for Medical Image Segmentation](https://www.arxiv.org/abs/2506.12747).  
 
 ## Citation
 If you find this repository helpful, please consider citing:
