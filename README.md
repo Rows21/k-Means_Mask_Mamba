@@ -4,7 +4,7 @@ Official Pytorch implementation of DSM, proposed in the following paper:
 
 ## Installation
 
-- It is recommended to build a Python-3.9 virtual environment using conda
+- It is recommended to clone the repository with Python 3.9:
 
   ```bash
   git clone https://github.com/Rows21/k-Means_Mask_Mamba.git
