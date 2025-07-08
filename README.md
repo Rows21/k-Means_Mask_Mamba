@@ -39,7 +39,6 @@ If you find this repository helpful, please consider citing:
   year={2025}
 }
 ```
-## Evaluation
 
 ## Acknowledgement
 This repository is built using the [timm](https://github.com/rwightman/pytorch-image-models) library.
