@@ -1,3 +1,6 @@
+### k-Means Mask Mamba
+[![CC BY 4.0][cc-by-shield]][cc-by]
+
 Official Pytorch implementation of DSM, proposed in the following paper:
 
 [Unleashing Diffusion and State Space Models for Medical Image Segmentation](https://www.arxiv.org/abs/2506.12747).  
@@ -44,7 +47,11 @@ If you find this repository helpful, please consider citing:
 This repository is built using the [timm](https://github.com/rwightman/pytorch-image-models) library.
 
 ## License
-This project is released under the MIT license. Please see the [LICENSE](LICENSE) file for more information.
+
+This work is licensed under a [Creative Commons Attribution 4.0 International License](https://creativecommons.org/licenses/by/4.0/).
+
+© 2025 Rong Wu. You are free to share and adapt the material with attribution.
+
 
 
  
