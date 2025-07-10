@@ -23,7 +23,7 @@ The data that support the findings of this study are openly available as follows
 - 08 [Multi-Modality Abdominal Multi-Organ Segmentation Challenge (AMOS)](https://amos22.grand-challenge.org), reference [53].
 - 09 [Decathlon (Liver, Lung, Pancreas, HepaticVessel, Spleen, Colon)](https://drive.google.com/drive/folders/1HqEgzS8BV2c7xYNrZdEAnrHk7osJJ--2), reference [43].
 - 10 [CT volumes with multiple organ segmentations (CT-ORG)](https://wiki.cancerimagingarchive.net/pages/viewpage.action?pageId=61080890), reference [68].
-- 11 [AbdomenCT 12organ](https://https://github.com/wasserth/TotalSegmentator), reference [73].
+- 11 [TotalSegmentator](https://github.com/wasserth/TotalSegmentator), reference [73].
 
 ## Mask Generation
 1. Please refer to [CLIP-Driven](https://github.com/ljwztc/CLIP-Driven-Universal-Model) to organize the downloaded datasets.
