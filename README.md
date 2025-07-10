@@ -1,5 +1,5 @@
 ### k-Means Mask Mamba
-[![CC BY-NC 4.0][cc-by-nc-shield]][cc-by-nc]
+[![CC BY-NC 4.0][cc-by-nc-shield]][cc-by-nc] [![DOI](https://zenodo.org/badge/427764203.svg)](https://doi.org/10.5281/zenodo.15852175)
 
 [Unleashing Diffusion and State Space Models for Medical Image Segmentation](https://www.arxiv.org/abs/2506.12747).  
 
