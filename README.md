@@ -1,5 +1,5 @@
-### k-Means Mask Mamba
-[![CC BY-NC 4.0][cc-by-nc-shield]][cc-by-nc] [![DOI](https://zenodo.org/badge/427764203.svg)](https://doi.org/10.5281/zenodo.15852175)
+# k-Means Mask Mamba
+
 <p align="center">
     <a href='[https://arxiv.org/abs/2502.18756](https://arxiv.org/abs/2506.12747)'>
       <img src='https://img.shields.io/badge/Paper-PDF-green?style=flat&logo=arXiv&logoColor=green' alt='arXiv PDF'>
