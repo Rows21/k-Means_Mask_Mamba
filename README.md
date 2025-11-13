@@ -11,6 +11,7 @@
       <img src='https://zenodo.org/badge/427764203.svg'>
     </a>
   </p>
+  
 [Unleashing Diffusion and State Space Models for Medical Image Segmentation](https://www.arxiv.org/abs/2506.12747).  
 
 ## Installation
